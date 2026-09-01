@@ -111,6 +111,9 @@ def build_agent(settings: Settings, tools: list) -> ToolCallingAgent:
         model_id=f"openai/{settings.llm_model}",
         api_base=settings.llm_base_url,
         api_key=settings.llm_api_key,
+        # DeepSeek 思考模式不接受 tool_choice="required"（会抛 BadRequestError），
+        # 显式设为 "auto" 以兼容。
+        tool_choice="auto",
         temperature=0.1,
     )
     return ToolCallingAgent(tools=adapt_tools(tools), model=model, max_steps=settings.agent_max_steps)

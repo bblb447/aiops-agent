@@ -72,3 +72,13 @@ def test_build_agent_accepts_empty_tools():
     assert isinstance(agent, ToolCallingAgent)
     assert agent.max_steps == s.agent_max_steps
     assert "final_answer" in agent.tools
+
+def test_build_agent_tool_choice_auto():
+    # DeepSeek 思考模式不接受 tool_choice="required"（BadRequestError），
+    # 构造出的 LiteLLMModel 必须显式用 "auto"。
+    from smolagents import LiteLLMModel
+    from app.agent.agent import build_agent
+    s = Settings(llm_api_key="sk-test")
+    agent = build_agent(s, [])
+    assert isinstance(agent.model, LiteLLMModel)
+    assert agent.model.kwargs.get("tool_choice") == "auto"
