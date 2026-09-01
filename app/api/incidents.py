@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.incident.model import Incident, IncidentStatus
+from app.incident.model import Incident, IncidentSeverity, IncidentStatus
 from app.incident.service import IncidentService
 from app.tools.factory import build_tools
 
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/v1/incidents")
 class CreateIncidentRequest(BaseModel):
     title: str
     service: str
-    severity: str = "major"
+    severity: IncidentSeverity = IncidentSeverity.MAJOR
 
 
 def _svc() -> IncidentService:

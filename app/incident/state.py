@@ -18,6 +18,8 @@ _ALLOWED: dict[S, set[S]] = {
 }
 
 def transition(state: S, target: S) -> S:
+    if state not in _ALLOWED:
+        raise InvalidTransitionError(f"非法状态转移: {state} -> {target}")
     if target not in _ALLOWED[state]:
         raise InvalidTransitionError(f"非法状态转移: {state} -> {target}")
     return target

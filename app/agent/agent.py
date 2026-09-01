@@ -132,7 +132,7 @@ def investigate(settings: Settings, svc: IncidentService,
     tool_names = [t.name for t in smol_tools]
     prompt = (
         f"你是 AIOps 诊断 Agent。请调查以下故障并给出带证据的根因结论。\n"
-        f"故障: {inc.title}，服务: {inc.service}，级别: {inc.severity}。\n"
+        f"故障: {inc.title}，服务: {inc.service}，级别: {inc.severity.value}。\n"
         f"可用只读工具: {tool_names}\n"
         f"步骤: 先查监控和日志收集证据，再给出结论与置信度。"
     )

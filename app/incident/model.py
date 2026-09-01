@@ -2,6 +2,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from pydantic import BaseModel, Field
 
+class IncidentSeverity(str, Enum):
+    CRITICAL = "critical"
+    MAJOR = "major"
+    MINOR = "minor"
+
+
 class IncidentStatus(str, Enum):
     NEW = "NEW"
     TRIAGING = "TRIAGING"
@@ -22,7 +28,7 @@ class Incident(BaseModel):
     incident_id: str
     title: str
     service: str
-    severity: str = "major"
+    severity: IncidentSeverity = IncidentSeverity.MAJOR
     status: IncidentStatus = IncidentStatus.NEW
     start_time: str = Field(default_factory=_now)
     affected_assets: list[str] = Field(default_factory=list)

@@ -1,14 +1,27 @@
 import pytest
-from app.incident.state import transition, InvalidTransitionError
+
+from app.incident.state import _ALLOWED, transition, InvalidTransitionError
 from app.incident.model import IncidentStatus as S
 
-def test_legal_transitions():
-    assert transition(S.NEW, S.TRIAGING) == S.TRIAGING
-    assert transition(S.TRIAGING, S.INVESTIGATING) == S.INVESTIGATING
-    assert transition(S.INVESTIGATING, S.ROOT_CAUSE_FOUND) == S.ROOT_CAUSE_FOUND
-    assert transition(S.INVESTIGATING, S.INSUFFICIENT_EVIDENCE) == S.INSUFFICIENT_EVIDENCE
-    assert transition(S.INVESTIGATING, S.ESCALATED) == S.ESCALATED
 
-def test_illegal_transition_raises():
+@pytest.mark.parametrize(
+    ("src", "tgt"),
+    [(src, tgt) for src in S for tgt in S],
+)
+def test_transition_full_table(src, tgt):
+    allowed = src in _ALLOWED and tgt in _ALLOWED[src]
+    if allowed:
+        assert transition(src, tgt) == tgt
+    else:
+        with pytest.raises(InvalidTransitionError):
+            transition(src, tgt)
+
+
+def test_transition_non_member_state_raises():
     with pytest.raises(InvalidTransitionError):
-        transition(S.NEW, S.RESOLVED)
+        transition("NOT_A_STATE", S.NEW)
+
+
+def test_transition_non_member_target_raises():
+    with pytest.raises(InvalidTransitionError):
+        transition(S.NEW, "NOT_A_STATE")

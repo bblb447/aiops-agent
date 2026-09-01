@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.incident.model import IncidentStatus
 from app.incident.service import IncidentService
 from app.main import create_app
 
@@ -9,7 +10,7 @@ def _fake_investigator(settings, svc, incident_id, tools):
     inc = svc.get(incident_id)
     svc.add_timeline(incident_id, {"event": "结论: 版本回归"})
     inc.root_cause = "版本回归"
-    inc.status = "ROOT_CAUSE_FOUND"
+    inc.status = IncidentStatus.ROOT_CAUSE_FOUND
     svc.update(inc)
     return "版本回归"
 
@@ -34,6 +35,14 @@ def test_create_and_investigate():
 
     r4 = c.get(f"/api/v1/incidents/{iid}/timeline")
     assert r4.status_code == 200 and len(r4.json()["timeline"]) >= 1
+
+
+def test_create_with_invalid_severity_returns_422():
+    svc = IncidentService()
+    app = create_app(Settings(llm_api_key="sk-test"), svc, _fake_investigator)
+    c = TestClient(app)
+    r = c.post("/api/v1/incidents", json={"title": "CPU 高", "service": "order-service", "severity": "info"})
+    assert r.status_code == 422
 
 
 def test_investigate_second_time_conflict():
