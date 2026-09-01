@@ -64,3 +64,6 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# ===== 内部计划/设计工作文档（不提交远端） =====
+docs/superpowers/
