@@ -1626,3 +1626,48 @@ LLM + SSH
 ```
 
 模型 API 单独作为可插拔模块，模型地址、API Key、模型名都由配置决定，设计文档不绑定任何具体厂商。
+
+---
+
+# 40. RAG 知识检索（已实现）
+
+在第 16 章知识库检索流程基础上，MVP 落地最小可用语义检索：
+
+```text
+Query → Embed → Vector Search(top-k) → Agent
+```
+
+暂未实现 Query Rewrite / Metadata Filter / Rerank（V2 补）。
+
+## 组件
+
+```text
+app/knowledge/
+├── chunker.py     markdown 按标题切块，超长硬切到 500 字符
+├── embeddings.py  fastembed 封装，BAAI/bge-small-zh-v1.5（512 维，中文优化，懒加载）
+└── retriever.py   chromadb 持久化（cosine 距离），index(upsert) + search(top-k)
+```
+
+## 数据流与降级
+
+```text
+search_runbook(query)
+   ├─ RAG 可用：读 runbooks/*.md → 切块 → 嵌入 → 写 chromadb → 语义 top-k
+   └─ 任一步失败（依赖缺失/模型不可达/网络异常）→ 降级关键词子串搜索，不 raise
+```
+
+配置：`rag_enabled`（默认开）、`rag_top_k`（默认 3），可在 `.env` 调整。
+
+## 关键实现点
+
+- chromadb 拒绝 numpy 类型：fastembed 输出 float32，须 `v.tolist()` 转 Python float。
+- fastembed 用 loguru 打日志；境内 HF 源不可达时回退 GCS 缓存并记一条 ERROR，
+  用 `logger.disable("fastembed")` 压掉预期噪音。
+- 模型下载：`HF_ENDPOINT=https://hf-mirror.com` + `HF_HUB_DISABLE_XET=1`
+  （新版 huggingface_hub 默认 Xet 协议在境内连不通）；模型缓存本地后离线可用。
+- chromadb 持久化在 `.data/chroma`（gitignore），进程内复用索引。
+
+## 测试
+
+单元测试不下载模型：chunker 切块边界、retriever 用 fake 向量验证 top-k 排序/空库/嵌入失败、
+KnowledgeTool 验证 RAG 失败降级关键词。真实模型检索用冒烟脚本单独验证（不跑在 CI）。

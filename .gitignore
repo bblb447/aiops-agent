@@ -65,5 +65,8 @@ tmp/
 temp/
 *.tmp
 
+# ===== 运行时数据（chromadb 向量库等） =====
+.data/
+
 # ===== 内部计划/设计工作文档（不提交远端） =====
 docs/superpowers/

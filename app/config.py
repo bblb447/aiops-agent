@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     loki_url: str = ""
     cmdb_url: str = ""
 
+    rag_enabled: bool = True
+    rag_top_k: int = 3
+
     agent_max_steps: int = 10
 
 @lru_cache
