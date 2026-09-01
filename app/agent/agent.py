@@ -10,6 +10,7 @@ smolagents 的 ``ToolCallingAgent`` 要求 ``tools`` 是 ``smolagents.tools.Tool
 """
 import inspect
 import json
+from pathlib import Path
 
 from smolagents import ToolCallingAgent, LiteLLMModel
 from smolagents.tools import Tool as SmolTool
@@ -18,6 +19,23 @@ from app.config import Settings
 from app.incident.service import IncidentService
 from app.incident.model import IncidentStatus as S
 from app.incident.state import transition
+
+# prompts/ 位于项目根目录（本文件在 app/agent/ 下，向上三级）。
+PROMPT_FILE = Path(__file__).resolve().parent.parent.parent / "prompts" / "diagnose.txt"
+
+_DEFAULT_PROMPT = (
+    "你是 AIOps 诊断 Agent。请调查以下故障并给出带证据的根因结论。\n"
+    "故障: {title}，服务: {service}，级别: {severity}。\n"
+    "可用只读工具: {tool_names}\n"
+    "步骤: 先查监控和日志收集证据，再给出结论与置信度。"
+)
+
+
+def _load_prompt_template() -> str:
+    try:
+        return PROMPT_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return _DEFAULT_PROMPT
 
 
 class _ToolAdapter(SmolTool):
@@ -130,11 +148,11 @@ def investigate(settings: Settings, svc: IncidentService,
     smol_tools = adapt_tools(tools)
     agent = build_agent(settings, smol_tools)
     tool_names = [t.name for t in smol_tools]
-    prompt = (
-        f"你是 AIOps 诊断 Agent。请调查以下故障并给出带证据的根因结论。\n"
-        f"故障: {inc.title}，服务: {inc.service}，级别: {inc.severity.value}。\n"
-        f"可用只读工具: {tool_names}\n"
-        f"步骤: 先查监控和日志收集证据，再给出结论与置信度。"
+    prompt = _load_prompt_template().format(
+        title=inc.title,
+        service=inc.service,
+        severity=inc.severity.value,
+        tool_names=tool_names,
     )
     try:
         conclusion = agent.run(prompt)

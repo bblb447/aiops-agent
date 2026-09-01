@@ -14,6 +14,36 @@ class _FakeAgent:
 class _NoConclusionAgent(_FakeAgent):
     def run(self, prompt): return ""
 
+class _CaptureAgent(_FakeAgent):
+    def __init__(self, tools=None, max_steps=None):
+        super().__init__(tools, max_steps)
+        self.prompt = None
+    def run(self, prompt):
+        self.prompt = prompt
+        return "根因: 版本回归，置信度 0.86"
+
+def test_investigate_uses_prompt_template(monkeypatch, tmp_path):
+    # prompt 模板文件被加载并填充 incident 数据（而非内联字符串）。
+    tpl = tmp_path / "prompt.txt"
+    tpl.write_text("模板: {title} / {service} / {severity} / {tool_names}", encoding="utf-8")
+    monkeypatch.setattr("app.agent.agent.PROMPT_FILE", tpl)
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    cap = _CaptureAgent()
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: cap)
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    assert cap.prompt == "模板: CPU 高 / order-service / critical / []"
+
+def test_investigate_prompt_falls_back_when_template_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.agent.agent.PROMPT_FILE", tmp_path / "nonexistent.txt")
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    cap = _CaptureAgent()
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: cap)
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    assert "AIOps 诊断 Agent" in cap.prompt
+    assert "CPU 高" in cap.prompt
+
 class _FailingAgent(_FakeAgent):
     def run(self, prompt):
         raise RuntimeError("LLM 网络超时")
