@@ -1,0 +1,9 @@
+smolagents>=1.27
+litellm
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+pytest
