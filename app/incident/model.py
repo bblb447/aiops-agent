@@ -20,6 +20,7 @@ class IncidentStatus(str, Enum):
     VERIFYING = "VERIFYING"
     RESOLVED = "RESOLVED"
     ESCALATED = "ESCALATED"
+    REOPEN = "REOPEN"
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()

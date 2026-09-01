@@ -25,3 +25,9 @@ def test_transition_non_member_state_raises():
 def test_transition_non_member_target_raises():
     with pytest.raises(InvalidTransitionError):
         transition(S.NEW, "NOT_A_STATE")
+
+
+def test_reopen_flow():
+    assert transition(S.RESOLVED, S.REOPEN) == S.REOPEN
+    assert transition(S.ESCALATED, S.REOPEN) == S.REOPEN
+    assert transition(S.REOPEN, S.TRIAGING) == S.TRIAGING

@@ -13,8 +13,9 @@ _ALLOWED: dict[S, set[S]] = {
     S.EXECUTING: {S.VERIFYING, S.ESCALATED},
     S.VERIFYING: {S.RESOLVED, S.ESCALATED},
     S.INSUFFICIENT_EVIDENCE: {S.ESCALATED},
-    S.ESCALATED: set(),
-    S.RESOLVED: set(),
+    S.ESCALATED: {S.REOPEN},
+    S.RESOLVED: {S.REOPEN},
+    S.REOPEN: {S.TRIAGING},
 }
 
 def transition(state: S, target: S) -> S:
