@@ -1,11 +1,11 @@
-import pytest
 import httpx
 from app.config import Settings
 from app.tools.monitoring import MonitoringTool
 from app.tools.logging import LoggingTool
 from app.tools.cmdb import CMDBTool
 from app.tools.knowledge import KnowledgeTool
-from app.tools.base import ToolError
+from app.tools.factory import build_tools
+
 
 def test_metric_queries_prometheus(monkeypatch):
     s = Settings(prometheus_url="http://prom:9090")
@@ -20,10 +20,28 @@ def test_metric_queries_prometheus(monkeypatch):
     assert r.success and r.data["data"]["result"]
     assert "prom:9090" in captured["url"]
 
-def test_unconfigured_prometheus_raises():
+
+def test_unconfigured_prometheus_returns_failure():
     tool = MonitoringTool(Settings())
-    with pytest.raises(ToolError):
-        tool.query_metric("cpu_usage")
+    r = tool.query_metric("cpu_usage")
+    assert not r.success
+    assert "未配置" in r.error
+    assert r.tool == "query_metric"
+
+
+def test_unconfigured_loki_returns_failure():
+    tool = LoggingTool(Settings())
+    r = tool.search_logs("error")
+    assert not r.success
+    assert "未配置" in r.error
+
+
+def test_unconfigured_cmdb_returns_failure():
+    tool = CMDBTool(Settings())
+    r = tool.get_service("order-service")
+    assert not r.success
+    assert "未配置" in r.error
+
 
 def test_runbook_search(tmp_path, monkeypatch):
     (tmp_path / "restart.md").write_text("当服务 CrashLoopBackOff 时，先检查最近发布再重启。", encoding="utf-8")
@@ -31,3 +49,9 @@ def test_runbook_search(tmp_path, monkeypatch):
     tool = KnowledgeTool(Settings())
     r = tool.search_runbook("CrashLoopBackOff")
     assert r.success and "restart.md" in r.data.get("hits", [])
+
+
+def test_build_tools_returns_four_tools():
+    tools = build_tools(Settings())
+    names = {t.__class__.__name__ for t in tools}
+    assert names == {"MonitoringTool", "LoggingTool", "CMDBTool", "KnowledgeTool"}

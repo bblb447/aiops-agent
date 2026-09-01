@@ -69,6 +69,30 @@ def test_investigate_returns_structured_error_on_failure():
     assert "LLM 网络超时" in body["error"]
 
 
+def test_investigate_passes_tools_to_investigator():
+    # 闭环注入：端点必须把 build_tools(settings) 的 4 个只读工具传给 investigator，
+    # 而不是硬编码空列表，Agent 才能真正动态诊断。
+    svc = IncidentService()
+    seen = {}
+
+    def tools_reader(settings, svc_, incident_id, tools):
+        seen["tools"] = tools
+        seen["names"] = {t.__class__.__name__ for t in tools}
+        return "已注入工具"
+
+    app = create_app(Settings(llm_api_key="sk-test"), svc, tools_reader)
+    c = TestClient(app)
+    r = c.post("/api/v1/incidents", json={"title": "磁盘满", "service": "storage-service"})
+    assert r.status_code == 200
+    iid = r.json()["incident_id"]
+
+    r2 = c.post(f"/api/v1/incidents/{iid}/investigate")
+    assert r2.status_code == 200
+    assert r2.json()["conclusion"] == "已注入工具"
+    assert len(seen["tools"]) == 4
+    assert seen["names"] == {"MonitoringTool", "LoggingTool", "CMDBTool", "KnowledgeTool"}
+
+
 def test_investigate_receives_real_settings():
     # Ruling #4: 端点必须把真实 Settings 传给 investigator（而不是 None），
     # 否则真实 investigate 路径（读 settings.agent_max_steps 等）会 AttributeError。

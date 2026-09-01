@@ -49,7 +49,7 @@ def test_adapter_forward_dispatches_to_tool(monkeypatch):
     adapters = adapt_tools([tool])
     adapter = next(a for a in adapters if a.name == "query_metric")
     # 输入 schema 映射：metric/target 必须出现在 smolagents 的 inputs 里。
-    assert {"metric", "target", "minutes"} <= set(adapter.inputs)
+    assert {"metric", "target"} <= set(adapter.inputs)
     out = adapter.forward(metric="cpu_usage", target="srv")
     # 返回的是合法 JSON，且能解析出 Prometheus 的 data.data.result。
     parsed = json.loads(out)

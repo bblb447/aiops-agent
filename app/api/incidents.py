@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 from app.incident.model import Incident, IncidentStatus
 from app.incident.service import IncidentService
+from app.tools.factory import build_tools
 
 router = APIRouter(prefix="/api/v1/incidents")
 
@@ -39,8 +40,9 @@ def investigate_incident(incident_id: str, svc: IncidentService = Depends(_svc))
     # Ruling #4: 必须把真实 Settings 传给 investigator（不是 None），
     # 否则真实 investigate 路径（读 settings.agent_max_steps 等）会 AttributeError。
     from app.main import current_settings, get_investigator
+    settings = current_settings()
     try:
-        conclusion = get_investigator()(current_settings(), svc, incident_id, tools=[])
+        conclusion = get_investigator()(settings, svc, incident_id, tools=build_tools(settings))
     except Exception as e:
         # 失败时 agent 已把 incident 转 ESCALATED（见 investigate 的 except 分支）；
         # 结构化返回 incident + 错误摘要，调用方无需再解析通用 500。
