@@ -30,6 +30,34 @@ def test_investigate_escalates_on_llm_failure(monkeypatch):
     assert any("调查失败" in t.get("event", "") for t in got.timeline)
     assert got.root_cause is None
 
+def test_adapter_forward_dispatches_to_tool(monkeypatch):
+    # 覆盖适配器最高风险代码路径：_ToolAdapter.forward 动态派发 -> ToolResult
+    # to_dict -> JSON 序列化，以及输入 schema 映射（metric/target）。
+    import json
+    import httpx
+    from app.agent.agent import adapt_tools
+    from app.tools.monitoring import MonitoringTool
+
+    s = Settings(prometheus_url="http://127.0.0.1:9")
+    tool = MonitoringTool(s)
+
+    def fake_get(url, params=None, timeout=None):
+        return httpx.Response(200, request=httpx.Request("GET", str(url)),
+                              json={"status": "success", "data": {"result": [{"value": [0, "94.5"]}]}})
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    adapters = adapt_tools([tool])
+    adapter = next(a for a in adapters if a.name == "query_metric")
+    # 输入 schema 映射：metric/target 必须出现在 smolagents 的 inputs 里。
+    assert {"metric", "target", "minutes"} <= set(adapter.inputs)
+    out = adapter.forward(metric="cpu_usage", target="srv")
+    # 返回的是合法 JSON，且能解析出 Prometheus 的 data.data.result。
+    parsed = json.loads(out)
+    assert parsed["success"] is True
+    assert parsed["tool"] == "query_metric"
+    assert parsed["data"]["data"]["result"][0]["value"][1] == "94.5"
+
+
 def test_investigate_transitions_to_root_cause(monkeypatch):
     svc = IncidentService()
     inc = svc.create("CPU 高", "order-service", "critical")

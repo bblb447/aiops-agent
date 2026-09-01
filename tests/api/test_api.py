@@ -36,6 +36,39 @@ def test_create_and_investigate():
     assert r4.status_code == 200 and len(r4.json()["timeline"]) >= 1
 
 
+def test_investigate_second_time_conflict():
+    # 二次调查：状态已非 NEW，必须返回 409 而非裸 500。
+    svc = IncidentService()
+    app = create_app(Settings(llm_api_key="sk-test"), svc, _fake_investigator)
+    c = TestClient(app)
+    r = c.post("/api/v1/incidents", json={"title": "CPU 高", "service": "order-service"})
+    iid = r.json()["incident_id"]
+    assert c.post(f"/api/v1/incidents/{iid}/investigate").status_code == 200
+    r2 = c.post(f"/api/v1/incidents/{iid}/investigate")
+    assert r2.status_code == 409
+    body = r2.json()["detail"]
+    assert "NEW" in body and "ROOT_CAUSE_FOUND" in body
+
+
+def test_investigate_returns_structured_error_on_failure():
+    # investigator 抛异常（含 InvalidTransitionError / LLM 异常）时，
+    # 返回 502 且响应体携带结构化 incident，而不是通用 500。
+    def failing_investigator(settings, svc_, incident_id, tools):
+        raise RuntimeError("LLM 网络超时")
+
+    svc = IncidentService()
+    app = create_app(Settings(llm_api_key="sk-test"), svc, failing_investigator)
+    c = TestClient(app)
+    r = c.post("/api/v1/incidents", json={"title": "CPU 高", "service": "order-service"})
+    iid = r.json()["incident_id"]
+    r2 = c.post(f"/api/v1/incidents/{iid}/investigate")
+    assert r2.status_code == 502
+    body = r2.json()["detail"]
+    assert body["incident"]["incident_id"] == iid
+    assert "RuntimeError" in body["error"]
+    assert "LLM 网络超时" in body["error"]
+
+
 def test_investigate_receives_real_settings():
     # Ruling #4: 端点必须把真实 Settings 传给 investigator（而不是 None），
     # 否则真实 investigate 路径（读 settings.agent_max_steps 等）会 AttributeError。
