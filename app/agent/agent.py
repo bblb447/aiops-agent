@@ -133,7 +133,16 @@ def investigate(settings: Settings, svc: IncidentService,
         f"可用只读工具: {tool_names}\n"
         f"步骤: 先查监控和日志收集证据，再给出结论与置信度。"
     )
-    conclusion = agent.run(prompt)
+    try:
+        conclusion = agent.run(prompt)
+    except Exception as e:
+        # LLM 调用失败（网络/鉴权/服务端错误）：记录 timeline 并把 incident
+        # 从 INVESTIGATING 转 ESCALATED，随后 re-raise 让 API 层能看到失败。
+        summary = f"{type(e).__name__}: {e}"
+        svc.add_timeline(incident_id, {"event": f"调查失败: {summary}"})
+        inc.status = transition(inc.status, S.ESCALATED)
+        svc.update(inc)
+        raise
 
     svc.add_timeline(incident_id, {"event": f"Agent 结论: {conclusion}"})
     inc.root_cause = conclusion

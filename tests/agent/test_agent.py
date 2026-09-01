@@ -14,6 +14,22 @@ class _FakeAgent:
 class _NoConclusionAgent(_FakeAgent):
     def run(self, prompt): return ""
 
+class _FailingAgent(_FakeAgent):
+    def run(self, prompt):
+        raise RuntimeError("LLM 网络超时")
+
+def test_investigate_escalates_on_llm_failure(monkeypatch):
+    svc = IncidentService()
+    inc = svc.create("连接超时", "payment-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _FailingAgent(t, s.agent_max_steps))
+    import pytest
+    with pytest.raises(RuntimeError):
+        investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.ESCALATED
+    assert any("调查失败" in t.get("event", "") for t in got.timeline)
+    assert got.root_cause is None
+
 def test_investigate_transitions_to_root_cause(monkeypatch):
     svc = IncidentService()
     inc = svc.create("CPU 高", "order-service", "critical")
