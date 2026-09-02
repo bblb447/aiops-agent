@@ -25,6 +25,18 @@ class IncidentStatus(str, Enum):
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+class EvidenceItem(BaseModel):
+    source: str
+    fact: str
+
+class RCAResult(BaseModel):
+    root_cause: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: list[EvidenceItem] = Field(min_length=1)
+    hypotheses: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    summary: str | None = None
+
 class Incident(BaseModel):
     incident_id: str
     title: str
@@ -44,6 +56,8 @@ class Incident(BaseModel):
     hypotheses: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
     root_cause: str | None = None
+    rca: RCAResult | None = None
+    failure_code: str | None = None
     remediation: list[str] = Field(default_factory=list)
     verification: str | None = None
     timeline: list[dict] = Field(default_factory=list)

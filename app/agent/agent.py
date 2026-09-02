@@ -15,7 +15,11 @@ from pathlib import Path
 from smolagents import ToolCallingAgent
 from smolagents.tools import Tool as SmolTool
 
+from app.agent.submit_tool import SubmitRCATool
 from app.config import Settings
+from app.incident.codes import (
+    LLM_ERROR, LOW_CONFIDENCE, MAX_STEPS, MISSING_EVIDENCE, NO_SUBMISSION,
+)
 from app.incident.service import IncidentService
 from app.incident.model import IncidentStatus as S
 from app.incident.state import transition
@@ -29,8 +33,10 @@ _DEFAULT_PROMPT = (
     "你是 AIOps 诊断 Agent。请调查以下故障并给出带证据的根因结论。\n"
     "故障: {title}，服务: {service}，级别: {severity}。\n"
     "告警上下文: {context}\n"
-    "可用只读工具: {tool_names}\n"
-    "步骤: 先查监控和日志收集证据，再给出结论与置信度。"
+    "可用工具: {tool_names}\n"
+    "步骤: 先用只读工具收集证据（监控/日志/CMDB/Runbook），"
+    "最后调用 submit_rca_result 提交结构化 RCA（root_cause/confidence/evidence/hypotheses），"
+    "再调用 final_answer 结束。submit_rca_result 才是业务结果提交；final_answer 只是结束信号。"
 )
 
 
@@ -166,7 +172,10 @@ def investigate(settings: Settings, svc: IncidentService,
     svc.add_timeline(incident_id, {"event": "分诊"})
     inc.status = transition(inc.status, S.INVESTIGATING); svc.update(inc)
 
-    smol_tools = adapt_tools(tools)
+    # 绑定本次 Incident 的 RCA 提交工具：只校验 + 存 holder，不写 Incident；
+    # 最终状态由本函数作为单一事务边界统一落库（docs/design.md 第 41 章）。
+    submit_tool = SubmitRCATool(svc, incident_id)
+    smol_tools = adapt_tools([*tools, submit_tool])
     agent = build_agent(settings, smol_tools)
     tool_names = [t.name for t in smol_tools]
     prompt = _load_prompt_template().format(
@@ -176,22 +185,51 @@ def investigate(settings: Settings, svc: IncidentService,
         tool_names=tool_names,
         context=_build_context(inc),
     )
+
+    conclusion: str | None = None
+    run_error: BaseException | None = None
+    max_steps_hit = False
     try:
-        conclusion = agent.run(prompt)
-    except Exception as e:
-        # LLM 调用失败（网络/鉴权/服务端错误）：记录 timeline 并把 incident
-        # 从 INVESTIGATING 转 ESCALATED，随后 re-raise 让 API 层能看到失败。
-        summary = f"{type(e).__name__}: {e}"
+        run_result = agent.run(prompt, return_full_result=True)
+    except Exception as e:  # noqa: BLE001 - LLM/框架异常统一归到失败路径
+        run_error = e
+    else:
+        output = getattr(run_result, "output", run_result)
+        conclusion = output if isinstance(output, str) else str(output)
+        max_steps_hit = getattr(run_result, "state", None) == "max_steps_error"
+
+    # 已成功提交合法 RCAResult → 本轮结果锁定，异常/超步数不降级。
+    if submit_tool.rca_result is not None:
+        inc.rca = submit_tool.rca_result
+        inc.root_cause = submit_tool.rca_result.root_cause
+        inc.failure_code = None
+        inc.status = transition(inc.status, S.ROOT_CAUSE_FOUND)
+        if run_error is not None:
+            conclusion = f"调查完成（RCA 已锁定，run 中断: {type(run_error).__name__}）"
+        svc.add_timeline(incident_id, {"event": f"Agent 结论: {conclusion}"})
+        svc.update(inc)
+        return conclusion or submit_tool.rca_result.root_cause
+
+    if run_error is not None:
+        summary = f"{type(run_error).__name__}: {run_error}"
         svc.add_timeline(incident_id, {"event": f"调查失败: {summary}"})
+        inc.failure_code = LLM_ERROR
         inc.status = transition(inc.status, S.ESCALATED)
         svc.update(inc)
-        raise
+        raise run_error
 
-    svc.add_timeline(incident_id, {"event": f"Agent 结论: {conclusion}"})
-    inc.root_cause = conclusion
-    if str(conclusion or "").strip():
-        inc.status = transition(inc.status, S.ROOT_CAUSE_FOUND)
-    else:
+    if max_steps_hit:
+        inc.failure_code = MAX_STEPS
+        inc.status = transition(inc.status, S.ESCALATED)
+    elif not submit_tool.submit_attempted:
+        inc.failure_code = NO_SUBMISSION
         inc.status = transition(inc.status, S.INSUFFICIENT_EVIDENCE)
+    elif submit_tool.last_validation_code == LOW_CONFIDENCE:
+        inc.failure_code = LOW_CONFIDENCE
+        inc.status = transition(inc.status, S.INSUFFICIENT_EVIDENCE)
+    else:
+        inc.failure_code = submit_tool.last_validation_code or MISSING_EVIDENCE
+        inc.status = transition(inc.status, S.INSUFFICIENT_EVIDENCE)
+    svc.add_timeline(incident_id, {"event": f"Agent 结论: {conclusion}"})
     svc.update(inc)
-    return conclusion
+    return conclusion or ""
