@@ -1,6 +1,6 @@
 # 基于 smolagents 的 AIOps Agent 系统设计文档
 
-**文档版本：** V1.1（V1.5 结构化 RCA 设计已定稿，见第 41 章）
+**文档版本：** V1.2（V1.5 结构化 RCA 已实现见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章）
 **项目名称：** AIOps Agent
 **核心框架：** smolagents
 **文档类型：** 系统设计文档
@@ -1899,5 +1899,119 @@ app/agent/final_parse.py    extract_rca_result()：<rca_result> 区块提取 + R
 app/agent/agent.py          investigate() 混合收尾：工具/兜底两通道 + RunResult 解码 + 统一落 Incident
 prompts/diagnose.txt        指导两种收尾方式与严格 JSON 格式
 scripts/smoke_real_llm.py   真实 LLM 冒烟验收（手工运行，不入 CI）
+scripts/experiment_convergence.py   V1.6 收敛 A/B 实验（Baseline vs Convergence，真实 LLM）
 tests/...                   rca 模型 / submit 工具 / final 解析 / investigate 状态机 / E2E 场景
 ```
+
+---
+
+# 42. Investigation Convergence（V1.6，实验定稿）
+
+> 本章为**有真实模型实验依据**的设计：先跑 A/B 收敛实验（`scripts/experiment_convergence.py`），
+> 据实定稿，不是先拍脑袋。
+
+## 42.1 问题定义
+
+V1.5 真实冒烟暴露：deepseek-v4-flash 在 ToolCallingAgent 里**过度调查、不收敛**——
+"只要还有一个没查过的指标就继续查"，一直查到 `max_steps`，不主动收尾。
+
+```text
+CPU 高 → 查 CPU → 查 QPS → 查 error → 查 load → 查 GC → 查 thread → … → MAX_STEPS
+```
+
+基线（A/B 实验 Baseline 组，2026-09-02，真实 DeepSeek）：
+
+```text
+read_calls=8   generate=9   submit 未调   rca=无   status=ESCALATED/MAX_STEPS
+```
+
+## 42.2 实验结论（决定性）
+
+只改 Prompt（不动状态机/不做强制注入/不改工具集），加入两样东西：
+
+```text
+调查预算    ：最多 4 次只读工具调用
+收敛判据    ：已有 ≥2 条独立证据且来自 ≥2 个来源 → 立即收尾提交 RCA
+```
+
+Convergence 组结果：
+
+```text
+read_calls=2   generate=5   submit 工具调用成功   rca_source=tool
+rca=有效       status=ROOT_CAUSE_FOUND
+```
+
+**结论：纯 Prompt 层的预算 + 收敛判据足以让模型在预算内收敛并形成合法 RCA**
+（该固定场景下）。**不需要强制收尾注入，也不需要工具集裁剪。**
+收敛路径上模型甚至成功调用了 `submit_rca_result`（工具通道命中）。
+
+## 42.3 收敛判据（Convergence Criteria）
+
+语义层规则（当前由 Prompt 表述）：
+
+> 已有 ≥2 条**独立**证据、且来自 ≥2 个**不同来源**时，必须停止调查并收尾。
+
+- "独立"：证据来自不同的工具调用/观察，不是同一指标的不同说法。
+- "来源"：prometheus / loki / cmdb / runbook / 变更 等不同数据域。
+
+后续若需硬约束（模型纪律不足时），可把判据移到代码层：记录证据后由 investigate 判定。
+
+## 42.4 调查预算（Investigation Budget）
+
+- 只读工具调用上限 `max_read_tools`：实验值 4。
+- `max_steps`（模型层总步数上限）保留作为兜底安全网，不替代只读预算。
+- 固化方式：写入诊断 prompt（"你最多只能调用 N 次只读工具"），建议暴露为配置
+  `agent_max_read_tools`（V1.6 落地时加 Settings 字段 + prompt 变量）。
+
+实验原则：**一次只改一个变量**。预算/判据若分阶段，先只加一个再观察，
+避免"到底是哪个因素让模型收敛"不可归因。
+
+## 42.5 Tool / Final 收尾策略
+
+沿用第 41 章混合收尾（submit 工具首选 + final `<rca_result>` 兜底），
+收敛 prompt 同时提醒两条通道。V1.6 不改变收尾机制本身。
+
+## 42.6 失败路径
+
+```text
+预算内收敛 + 有效 RCA  → ROOT_CAUSE_FOUND
+预算内收敛但无有效 RCA → INSUFFICIENT_EVIDENCE（归因同 §41.5）
+预算用尽仍未收敛       → ESCALATED / MAX_STEPS（或按 §41 归因）
+```
+
+注意：模型"查满 max_steps 仍不提交"是比"最后 JSON 写坏"更上层的失败原因，
+超步数保持 ESCALATED/MAX_STEPS 语义（V1.5 已定，不改）。
+
+## 42.7 可观测指标
+
+每次冒烟/实验记录：
+
+```text
+step/generate 次数    read_tool_calls    unique_tools
+submit_tool_called    rca_source         rca_valid
+status                failure_code
+```
+
+`scripts/experiment_convergence.py` 为 A/B 实验 harness；验收优先级：
+预算内收敛 > RCA 合法 > tool/final 路径。
+
+## 42.8 后续强制收尾方案（如需要）
+
+当前单场景实验证明 Prompt 收敛足够，**暂不设计强制注入**。
+若后续更复杂/更长尾场景下模型仍不收敛，再研究：
+
+```text
+smolagents mid-run 注入 / step hook（需核实版本能力）
+  ↓
+Budget + Convergence + Forced Stop 实验 2
+  ↓
+据实把强制收尾补进 V1.6
+```
+
+## 42.9 待固化清单（V1.6 实施）
+
+1. `prompts/diagnose.txt` 加入调查预算 + 收敛判据（把实验的 Convergence Prompt 固化到生产 prompt）。
+2. Settings 增 `agent_max_read_tools`（默认 4），prompt 变量注入。
+3. 用 `scripts/experiment_convergence.py` 在不同场景复验（多来源场景、日志/变更场景）。
+4. P1：Tool/Final confidence 严格校验统一（§41.7 已知项）。
+5. P2：Tool Adapter 显式 `exposed_methods`（§41.7 已知项）。
