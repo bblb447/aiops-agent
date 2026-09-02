@@ -136,11 +136,12 @@ def main() -> int:
         tmp.cleanup()
 
     got = svc.get(inc.incident_id)
-    transcript = _dump(holder["model"].calls[-1]) if holder.get("model") and holder["model"].calls else ""
+    # 扫描整条调用轨迹（submit 可能发生在较早的某次 generate），而非只看最后一次。
+    transcript = "\n".join(_dump(call) for call in holder["model"].calls) if holder.get("model") and holder["model"].calls else ""
     rca_valid = got.rca is not None
+    # rca_source 是权威信号（investigate 落库时决定），不能用文本里是否"提到"submit 判断：
+    # 模型常会在 final 文本里"写"出 submit_rca_result 却不真正调用它。
     rca_source = got.rca_source  # "tool" / "final_answer" / None
-    # transcript 中出现 submit_rca_result（工具调用或 ToolResult）说明模型真的调了工具。
-    submit_tool_called = "submit_rca_result" in transcript
 
     print("\n==== AIOps Agent V1.5 真实 LLM 冒烟验收 ====")
     print(f"model          : {settings.llm_model}")
@@ -151,10 +152,9 @@ def main() -> int:
     print(f"    search_runbook 调用: {'yes' if 'search_runbook' in transcript else 'no'}")
     print("[2] ToolResult 读取")
     print(f"    对话中出现实测值 95.2: {'yes' if '95.2' in transcript else 'no'}")
-    print("[3] RCA 结果来源（区分 tool path / final fallback）")
+    print("[3] RCA 结果来源（rca_source 权威判定 tool path / final fallback）")
     print(f"    rca 有效            : {'yes' if rca_valid else 'no'}")
     print(f"    rca_source          : {rca_source}")
-    print(f"    submit 工具被调用     : {'yes' if submit_tool_called else 'no'}")
     print(f"    tool path 命中      : {'yes' if rca_source == 'tool' else 'no'}")
     print(f"    final fallback 命中 : {'yes' if rca_source == 'final_answer' else 'no'}")
     print("[4] RCAResult 合法性")
