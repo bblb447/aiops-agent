@@ -2022,7 +2022,12 @@ Budget + Convergence + Forced Stop 实验 2
    （真实冒烟复验 PASS：模型按预期 tool 通道提交，无过度调查；全量 236 passed）
 
 **后续验证 / 待办**
-3. 用 `scripts/experiment_convergence.py` 扩场景复验：多来源场景、日志/变更场景
-   （当前验证仅在"一次查询即可判断"的 CPU 固定场景）。
+3. 扩场景复验（`scripts/experiment_convergence.py`，真实 LLM，工具层计数）**已做**：
+   - `multi_source_mem_gc`（监控+日志双来源）：generate=3，read_calls=2（query_metric+search_logs），
+     rca_source=tool，ROOT_CAUSE_FOUND
+   - `release_regression`（监控+日志+runbook，发布回归）：generate=4，read_calls=3，
+     rca_source=tool，ROOT_CAUSE_FOUND
+   结论：收敛 prompt 在多来源/日志场景泛化成立，预算内收敛且走工具通道。
+   剩余：接入真实 Prometheus/Loki/CMDB/变更工具后再复验（当前为 fixture）。
 4. P1：Tool/Final confidence 严格校验统一（§41.7 已知项，软预算外的一致性收口）。
 5. P2：Tool Adapter 显式 `exposed_methods`（§41.7 已知项）。
