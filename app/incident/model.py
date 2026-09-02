@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Literal
 from pydantic import BaseModel, Field
 
 class IncidentSeverity(str, Enum):
@@ -57,6 +58,7 @@ class Incident(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     root_cause: str | None = None
     rca: RCAResult | None = None
+    rca_source: Literal["tool", "final_answer"] | None = None
     failure_code: str | None = None
     remediation: list[str] = Field(default_factory=list)
     verification: str | None = None

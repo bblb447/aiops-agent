@@ -2,4 +2,7 @@
 故障: {title}，服务: {service}，级别: {severity}。
 告警上下文: {context}
 可用工具: {tool_names}
-步骤: 先用只读工具收集证据（监控/日志/CMDB/Runbook），最后调用 submit_rca_result 提交结构化 RCA（root_cause/confidence/evidence/hypotheses），再调用 final_answer 结束。submit_rca_result 才是业务结果提交；final_answer 只是结束信号。
+步骤: 先用只读工具收集证据（监控/日志/CMDB/Runbook），通常 1~3 次工具调用即可判断根因。证据足够时就立即收尾，不要无限调查。收尾二选一：
+  ① 首选：调用 submit_rca_result 提交结构化 RCA；
+  ② 兜底：调用 final_answer 时把严格 JSON 放进 <rca_result>...</rca_result> 标签内。
+两者 JSON 字段一致：root_cause 为字符串；confidence 为 0 到 1 之间的数字；evidence 为数组且至少 1 条，每条必须是含 source（字符串，数据源）与 fact（字符串，证据事实）两个字段的对象；hypotheses 与 recommendations 为字符串数组；summary 为可选字符串。注意：evidence 不要用纯字符串数组；hypotheses 不要用对象数组。

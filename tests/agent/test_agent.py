@@ -1,7 +1,15 @@
+import json
+
 from app.config import Settings
 from app.incident.service import IncidentService
 from app.incident.model import IncidentStatus as S
 from app.agent.agent import investigate
+
+
+def _rca_block(data) -> str:
+    return ("调查完成：\n<rca_result>\n"
+            + json.dumps(data, ensure_ascii=False)
+            + "\n</rca_result>")
 
 
 class _Run:
@@ -84,9 +92,56 @@ class _MaxStepsAgent(_FakeAgent):
         return _Run(output="到达最大步数", state="max_steps_error")
 
 
+class _MaxStepsWithValidFinalAgent(_FakeAgent):
+    def run(self, prompt, return_full_result=True):
+        self.prompt = prompt
+        return _Run(output=_rca_block({
+            "root_cause": "内存泄漏", "confidence": 0.7,
+            "evidence": [{"source": "prometheus", "fact": "CPU 95.2%"}],
+        }), state="max_steps_error")
+
+
 class _FailingAgent(_FakeAgent):
     def run(self, prompt, return_full_result=True):
         raise RuntimeError("LLM 网络超时")
+
+
+class _FinalJsonAgent(_FakeAgent):
+    def run(self, prompt, return_full_result=True):
+        self.prompt = prompt
+        return _Run(output=_rca_block({
+            "root_cause": "内存泄漏", "confidence": 0.7,
+            "evidence": [{"source": "prometheus", "fact": "CPU 95.2%"}],
+        }), state="success")
+
+
+class _MalformedFinalAgent(_FakeAgent):
+    def run(self, prompt, return_full_result=True):
+        self.prompt = prompt
+        return _Run(output=_rca_block({
+            "root_cause": "x", "confidence": 0.8,
+            "evidence": ["CPU 很高"],
+        }), state="success")
+
+
+class _ToolFailThenFinalOkAgent(_FakeAgent):
+    def run(self, prompt, return_full_result=True):
+        self.prompt = prompt
+        self.submit(valid=False)  # 工具校验失败
+        return _Run(output=_rca_block({
+            "root_cause": "内存泄漏", "confidence": 0.7,
+            "evidence": [{"source": "prometheus", "fact": "CPU 95.2%"}],
+        }), state="success")
+
+
+class _ToolWinsOverFinalAgent(_FakeAgent):
+    def run(self, prompt, return_full_result=True):
+        self.prompt = prompt
+        self.submit(valid=True)  # 工具成功
+        return _Run(output=_rca_block({
+            "root_cause": "final-json-结论", "confidence": 0.99,
+            "evidence": [{"source": "x", "fact": "y"}],
+        }), state="success")
 
 
 def test_investigate_uses_prompt_template(monkeypatch, tmp_path):
@@ -154,6 +209,7 @@ def test_investigate_submit_success_is_root_cause_found(monkeypatch):
     assert got.rca is not None
     assert got.rca.root_cause == "版本回归"
     assert got.rca.confidence == 0.86
+    assert got.rca_source == "tool"
     # root_cause 由 rca 派生同步。
     assert got.root_cause == "版本回归"
     assert out == "调查完成"
@@ -188,6 +244,67 @@ def test_investigate_max_steps_is_escalated(monkeypatch):
     got = svc.get(inc.incident_id)
     assert got.status == S.ESCALATED
     assert got.failure_code == "MAX_STEPS"
+
+
+def test_investigate_max_steps_with_valid_final_json_is_root_cause(monkeypatch):
+    # 超步数但 final 文本含合法 <rca_result> → 仍接受为 RCA（有效结果优先于失败状态）。
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _MaxStepsWithValidFinalAgent(t, s.agent_max_steps))
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.ROOT_CAUSE_FOUND
+    assert got.rca_source == "final_answer"
+    assert got.rca.root_cause == "内存泄漏"
+
+
+def test_investigate_final_json_fallback(monkeypatch):
+    # 未调用 submit 工具，但 final 文本含合法 <rca_result> → 兜底成立。
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _FinalJsonAgent(t, s.agent_max_steps))
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.ROOT_CAUSE_FOUND
+    assert got.failure_code is None
+    assert got.rca_source == "final_answer"
+    assert got.rca.root_cause == "内存泄漏"
+    assert got.root_cause == "内存泄漏"
+
+
+def test_investigate_tool_fail_then_final_json_ok(monkeypatch):
+    # Case C：工具提交失败不阻断 final JSON 兜底。
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _ToolFailThenFinalOkAgent(t, s.agent_max_steps))
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.ROOT_CAUSE_FOUND
+    assert got.rca_source == "final_answer"
+
+
+def test_investigate_tool_wins_over_final_json(monkeypatch):
+    # Case D：工具成功 → 工具结果锁定，final JSON 忽略。
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _ToolWinsOverFinalAgent(t, s.agent_max_steps))
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.ROOT_CAUSE_FOUND
+    assert got.rca_source == "tool"
+    assert got.rca.root_cause == "版本回归"
+
+
+def test_investigate_final_json_malformed_is_missing_evidence(monkeypatch):
+    # final 有区块但 evidence 是字符串数组 → schema 拒绝 → MISSING_EVIDENCE。
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _MalformedFinalAgent(t, s.agent_max_steps))
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.INSUFFICIENT_EVIDENCE
+    assert got.failure_code == "MISSING_EVIDENCE"
+    assert got.rca is None
 
 
 def test_investigate_escalates_on_llm_failure(monkeypatch):

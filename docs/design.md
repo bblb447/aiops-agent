@@ -1717,8 +1717,13 @@ KnowledgeTool 验证 RAG 失败降级关键词。真实模型检索用冒烟脚�
 > 通过 HTTP Provider 调用。因此 RCA 输出必须**机器可读**，不能只是一段自然语言总结。
 
 V1.5 核心改动：把 `root_cause`（字符串）升级为结构化 `RCAResult`
-（含 confidence / evidence / hypotheses），由 Agent 在诊断循环内调用 `submit_rca_result` 提交，
-`investigate()` 统一落库并决定最终状态。
+（含 confidence / evidence / hypotheses）。RCA 结果经**两条通道**到达：首选 `submit_rca_result` 工具，
+兜底为 `final_answer` 中 `<rca_result>` JSON；`investigate()` 统一校验、落库并决定最终状态。
+
+> **真实模型验证（2026-09-02 冒烟）**：deepseek-v4-flash 在此 harness 下能正常调用查询类工具，
+> 但**不可靠调用带复杂嵌套参数的终态工具**（submit_rca_result），且易过度调查直到超步数；
+> 它倾向用 final 文本"写"出结构化结果（且 evidence 常写成字符串数组、不合 schema）。
+> 因此定稿为混合收尾：不依赖模型工具行为，兜底通道 + 同一 schema 校验是鲁棒性的关键。
 
 ## 41.1 数据模型
 
@@ -1736,15 +1741,17 @@ class RCAResult(BaseModel):
     summary: str | None = None                           # 可选，展示用
 ```
 
-`Incident` 新增两个字段，`root_cause` 保留作兼容：
+`Incident` 新增字段，`root_cause` 保留作兼容：
 
 ```python
-rca: RCAResult | None = None    # 唯一权威来源（authoritative）
-root_cause: str | None = None   # legacy：写入时从 rca.root_cause 派生
-failure_code: str | None = None # 最终未形成有效 RCA 时的顶层失败原因
+rca: RCAResult | None = None        # 唯一权威来源（authoritative）
+rca_source: Literal["tool", "final_answer"] | None = None  # 结果来源通道
+root_cause: str | None = None       # legacy：写入时从 rca.root_cause 派生
+failure_code: str | None = None     # 最终未形成有效 RCA 时的顶层失败原因
 ```
 
 原则：`rca` 是唯一真实数据源，`root_cause` 是派生兼容字段，两者永不存不同内容。
+`rca_source` 用于统计两条通道的实际命中率（决定未来是否值得重做工具路线）。
 
 ## 41.2 failure_code 词表（本轮锁定六码）
 
@@ -1792,14 +1799,30 @@ class SubmitRCATool:
 
 多次提交时，最后一次**成功**提交为准；成功后若再失败，只更新 validation_error / code，不清空已锁存的 rca_result。
 
-## 41.4 final_answer 的职责
+## 41.4 混合收尾：两条 RCA 结果通道
 
-`final_answer` 只是**结束信号**，不是业务结果提交。是否有有效 RCA 由 holder 决定：
+`submit_rca_result` 是**首选**结构化提交通道；`final_answer` 除了结束信号，还是**结构化提交兜底通道**：
 
 ```text
-submit_rca_result  → 业务结果提交
-final_answer       → Agent 生命周期结束信号
+submit_rca_result（工具）
+    = 首选结构化提交通道
+
+final_answer + <rca_result> JSON
+    = 人类可读收尾 + 兜底结构化通道
 ```
+
+兜底只在 `final_answer` 文本的 `<rca_result>...</rca_result>` 标签内提取 JSON（不猜自然语言里的任意 JSON），
+并经与工具**同一套** `RCAResult` schema 校验。兜底不降低标准，只是改变输入通道。
+
+```text
+RCA precedence:
+1. 有效的 submit_rca_result（工具）   → rca_source="tool"
+2. 有效的 final_answer <rca_result>   → rca_source="final_answer"
+3. failure_code
+```
+
+任何有效 RCAResult 产生后即锁定，后续文本/错误不覆盖不降级；`final_answer` 中无合法 RCA JSON ≠ 失败，
+只有两条通道都没有有效 RCAResult 时才进入 failure state。
 
 ## 41.5 investigate() 流程（单一事务边界）
 
@@ -1808,31 +1831,32 @@ investigate()
  ├─ 状态机推进到 INVESTIGATING
  ├─ 创建 SubmitRCATool(svc, incident_id)，加入本轮工具列表
  ├─ adapt_tools → build_agent → agent.run(prompt, return_full_result=True)
- ├─ 读取 holder / RunResult.state 统一判定
- └─ 一次性写 Incident：rca / root_cause / status / failure_code
+ ├─ 通道1：工具提交（submit_tool.rca_result）
+ ├─ 通道2：final 文本 <rca_result>（仅 run 正常结束/超步数时有文本）
+ └─ 一次性写 Incident：rca / rca_source / root_cause / status / failure_code
 ```
 
-最终状态判定优先级（**rca_result 已锁存最优先**）：
+最终状态判定优先级：
 
 ```text
-holder.rca_result 有效
-   → ROOT_CAUSE_FOUND / failure_code=None
-     （一旦成功提交即锁定；后续 final_answer / 工具错误不降级）
+submit_tool.rca_result 有效（通道1）
+   → ROOT_CAUSE_FOUND / rca_source="tool" / failure_code=None
+     （工具成功即锁定，final JSON / 后续错误不覆盖）
+
+否则 final <rca_result> 解析有效（通道2，run 未抛异常）
+   → ROOT_CAUSE_FOUND / rca_source="final_answer" / failure_code=None
+     （工具失败不阻断兜底）
 
 否则 agent.run 抛异常
    → ESCALATED / LLM_ERROR
 
-否则 RunResult.state == "max_steps_error"
+否则无有效 RCA 且 RunResult.state == "max_steps_error"
    → ESCALATED / MAX_STEPS
 
-否则未调用 submit（!submit_attempted）
-   → INSUFFICIENT_EVIDENCE / NO_SUBMISSION
-
-否则 last_validation_code == "LOW_CONFIDENCE"
-   → INSUFFICIENT_EVIDENCE / LOW_CONFIDENCE
-
-否则（MISSING_EVIDENCE 或兜底）
-   → INSUFFICIENT_EVIDENCE / MISSING_EVIDENCE
+否则（正常结束，两通道皆无效）：
+   final 区块存在但非法        → INSUFFICIENT_EVIDENCE / final_code（LOW_CONFIDENCE 或 MISSING_EVIDENCE）
+   工具调用过但校验失败        → INSUFFICIENT_EVIDENCE / last_validation_code 或 MISSING_EVIDENCE
+   两者都未尝试               → INSUFFICIENT_EVIDENCE / NO_SUBMISSION
 ```
 
 `ToolResult(success=False)` 是**正常工具返回**（Agent 看到"监控查询失败"可换证据继续调查），不触发 ESCALATED 分支。
@@ -1849,17 +1873,24 @@ API 层 `{"conclusion": ..., "incident": ...}` 结构不变。
 3. SubmitRCATool 不写 Incident；investigate() 作为事务边界统一落 Incident。
 4. investigate() 返回 conclusion 文本；结构化从 incident.rca 读。
 5. rca_result 锁存：成功提交后不被后续失败覆盖；最后一次成功提交为准。
-6. final_answer 仅结束信号；无有效提交不得 ROOT_CAUSE_FOUND。
+6. **混合收尾**：RCA 优先级 tool > final_answer `<rca_result>` > failure_code；两条通道共用同一 schema 校验；
+   工具成功即锁定，final JSON 不覆盖；工具失败不阻断 final 兜底；无任何有效 RCAResult 才进 failure state。
 7. TOOL_ERROR 作为状态机契约保留，V1 不主动制造（工具失败走 ToolResult(success=False)）。
 8. `Incident.evidence`（legacy list[str]，调查过程原始证据摘要）本轮保留不动；
    `RCAResult.evidence`（结构化、支撑 RCA 结论的证据）职责不同。
+9. `Incident.rca_source` 记录结果来源通道，用于统计工具/兜底真实命中率。
 
-## 41.8 对应实现位置（已实现，提交 06c3379）
+**V1.6 待做（不在本轮）**：调查收敛机制（Evidence/Investigation Budget、Convergence Criteria）——
+真实模型冒烟暴露"只要还有没查过的指标就继续查、直到 max_steps"的过度调查问题。
+
+## 41.8 对应实现位置（已实现，提交 06c3379 / 15b01d4 后续）
 
 ```text
-app/incident/model.py      EvidenceItem / RCAResult；Incident 增 rca / failure_code
-app/agent/submit_tool.py   SubmitRCATool（绑定 svc+incident_id，holder）
-app/agent/agent.py         investigate() 重构：注入 submit 工具、RunResult 解码、统一落 Incident
-prompts/diagnose.txt       提示 Agent 先 submit_rca_result 再 final_answer
-tests/...                  rca 模型 / submit 工具 / investigate 状态机 / E2E 场景
+app/incident/model.py       EvidenceItem / RCAResult；Incident 增 rca / rca_source / failure_code
+app/agent/submit_tool.py    SubmitRCATool（绑定 svc+incident_id，holder，工具通道）
+app/agent/final_parse.py    extract_rca_result()：<rca_result> 区块提取 + RCAResult schema 校验（兜底通道）
+app/agent/agent.py          investigate() 混合收尾：工具/兜底两通道 + RunResult 解码 + 统一落 Incident
+prompts/diagnose.txt        指导两种收尾方式与严格 JSON 格式
+scripts/smoke_real_llm.py   真实 LLM 冒烟验收（手工运行，不入 CI）
+tests/...                   rca 模型 / submit 工具 / final 解析 / investigate 状态机 / E2E 场景
 ```

@@ -44,6 +44,7 @@ def test_rcarresult_rejects_confidence_out_of_range():
 def test_incident_has_rca_and_failure_code_defaults():
     inc = Incident(incident_id="INC-00001", title="CPU 高", service="order-service")
     assert inc.rca is None
+    assert inc.rca_source is None
     assert inc.failure_code is None
 
 
@@ -56,3 +57,9 @@ def test_incident_stores_rca():
     inc = Incident(incident_id="INC-00001", title="CPU 高", service="order-service", rca=r)
     assert inc.rca is not None
     assert inc.rca.root_cause == "deployment_regression"
+
+
+def test_incident_rca_source_field():
+    inc = Incident(incident_id="INC-00001", title="CPU 高", service="order-service",
+                   rca_source="final_answer")
+    assert inc.rca_source == "final_answer"

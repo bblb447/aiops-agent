@@ -25,8 +25,26 @@ class SubmitRCATool:
         self.validation_error: str | None = None
         self.last_validation_code: str | None = None
 
-    def submit_rca_result(self, root_cause=None, confidence=None, evidence=None,
-                          hypotheses=None, recommendations=None, summary=None) -> ToolResult:
+    def submit_rca_result(self, root_cause: str = "", confidence: float = None,
+                          evidence: list = None, hypotheses: list = None,
+                          recommendations: list = None, summary: str = None) -> ToolResult:
+        """提交本 Incident 的最终 RCA 结论，成功即代表根因已定位。
+
+        这是本次调查的【必选收尾步骤】：当你已收集到足以判断根因的证据时，
+        必须调用本工具结束调查，然后才调用 final_answer。不要用 final_answer 代替本工具。
+
+        参数:
+          - root_cause (string): 根因结论，简短明确，如 "deployment_regression"
+          - confidence (number): 置信度 0~1，如 0.87
+          - evidence (array): 支撑根因的证据列表，至少 1 条；每条必须是对象
+            {"source": "数据源(prometheus/loki/cmdb/runbook...)", "fact": "证据事实"}，
+            例如 {"source": "prometheus", "fact": "cpu_usage=95.2 超过阈值 80"}
+          - hypotheses (array, 可选): 候选假设列表，如 ["deployment_regression", "traffic_spike"]
+          - recommendations (array, 可选): 处置建议列表
+          - summary (string, 可选): 一句话总结
+
+        校验失败会返回错误信息，你可修正后重试；成功后本 Incident 进入 ROOT_CAUSE_FOUND。
+        """
         self.submit_attempted = True
         root_cause = str(root_cause or "").strip()
         evidence = evidence or []

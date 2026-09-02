@@ -15,10 +15,11 @@ from pathlib import Path
 from smolagents import ToolCallingAgent
 from smolagents.tools import Tool as SmolTool
 
+from app.agent.final_parse import extract_rca_result
 from app.agent.submit_tool import SubmitRCATool
 from app.config import Settings
 from app.incident.codes import (
-    LLM_ERROR, LOW_CONFIDENCE, MAX_STEPS, MISSING_EVIDENCE, NO_SUBMISSION,
+    LLM_ERROR, MAX_STEPS, MISSING_EVIDENCE, NO_SUBMISSION,
 )
 from app.incident.service import IncidentService
 from app.incident.model import IncidentStatus as S
@@ -34,9 +35,13 @@ _DEFAULT_PROMPT = (
     "故障: {title}，服务: {service}，级别: {severity}。\n"
     "告警上下文: {context}\n"
     "可用工具: {tool_names}\n"
-    "步骤: 先用只读工具收集证据（监控/日志/CMDB/Runbook），"
-    "最后调用 submit_rca_result 提交结构化 RCA（root_cause/confidence/evidence/hypotheses），"
-    "再调用 final_answer 结束。submit_rca_result 才是业务结果提交；final_answer 只是结束信号。"
+    "步骤: 先用只读工具收集证据（监控/日志/CMDB/Runbook），通常 1~3 次工具调用即可判断根因。"
+    "证据足够时就立即收尾，不要无限调查。收尾二选一：①首选调用 submit_rca_result 提交结构化 RCA；"
+    "②兜底调用 final_answer 时把严格 JSON 放进 <rca_result>...</rca_result> 标签。"
+    "JSON 字段：root_cause 为字符串；confidence 为 0 到 1 之间的数字；evidence 为数组且至少 1 条，"
+    "每条必须是含 source（字符串，数据源）与 fact（字符串，证据事实）两个字段的对象；"
+    "hypotheses 与 recommendations 为字符串数组；summary 可选。"
+    "注意：evidence 不要用纯字符串数组；hypotheses 不要用对象数组。"
 )
 
 
@@ -198,18 +203,31 @@ def investigate(settings: Settings, svc: IncidentService,
         conclusion = output if isinstance(output, str) else str(output)
         max_steps_hit = getattr(run_result, "state", None) == "max_steps_error"
 
-    # 已成功提交合法 RCAResult → 本轮结果锁定，异常/超步数不降级。
+    # 混合收尾（docs/design.md 第 41 章）：RCA 优先级
+    #   1) submit_rca_result（工具，首选） > 2) final_answer 的 <rca_result> JSON（兜底） > 3) failure_code
+    # 成功产生有效 RCAResult 即锁定；后续文本/错误不降级。
+
+    # 通道 1：工具提交。
     if submit_tool.rca_result is not None:
-        inc.rca = submit_tool.rca_result
-        inc.root_cause = submit_tool.rca_result.root_cause
-        inc.failure_code = None
-        inc.status = transition(inc.status, S.ROOT_CAUSE_FOUND)
+        _commit_rca(inc, submit_tool.rca_result, "tool")
         if run_error is not None:
             conclusion = f"调查完成（RCA 已锁定，run 中断: {type(run_error).__name__}）"
         svc.add_timeline(incident_id, {"event": f"Agent 结论: {conclusion}"})
         svc.update(inc)
         return conclusion or submit_tool.rca_result.root_cause
 
+    # 通道 2：final 文本兜底（仅 run 正常结束/超步数时有文本；异常则无可解析内容）。
+    final_rca = None
+    final_code = None
+    if run_error is None:
+        final_rca, final_code = extract_rca_result(conclusion)
+    if final_rca is not None:
+        _commit_rca(inc, final_rca, "final_answer")
+        svc.add_timeline(incident_id, {"event": f"Agent 结论: {conclusion}"})
+        svc.update(inc)
+        return conclusion or final_rca.root_cause
+
+    # 两条通道都无有效 RCA → failure state。
     if run_error is not None:
         summary = f"{type(run_error).__name__}: {run_error}"
         svc.add_timeline(incident_id, {"event": f"调查失败: {summary}"})
@@ -221,15 +239,25 @@ def investigate(settings: Settings, svc: IncidentService,
     if max_steps_hit:
         inc.failure_code = MAX_STEPS
         inc.status = transition(inc.status, S.ESCALATED)
-    elif not submit_tool.submit_attempted:
-        inc.failure_code = NO_SUBMISSION
-        inc.status = transition(inc.status, S.INSUFFICIENT_EVIDENCE)
-    elif submit_tool.last_validation_code == LOW_CONFIDENCE:
-        inc.failure_code = LOW_CONFIDENCE
-        inc.status = transition(inc.status, S.INSUFFICIENT_EVIDENCE)
     else:
-        inc.failure_code = submit_tool.last_validation_code or MISSING_EVIDENCE
+        # 归因：final 区块尝试但非法 > 工具尝试但失败 > 从未提交。
+        if final_code is not None:
+            code = final_code
+        elif submit_tool.submit_attempted:
+            code = submit_tool.last_validation_code or MISSING_EVIDENCE
+        else:
+            code = NO_SUBMISSION
+        inc.failure_code = code
         inc.status = transition(inc.status, S.INSUFFICIENT_EVIDENCE)
     svc.add_timeline(incident_id, {"event": f"Agent 结论: {conclusion}"})
     svc.update(inc)
     return conclusion or ""
+
+
+def _commit_rca(inc, rca, source: str) -> None:
+    """单一事务边界：把有效 RCA 落到 Incident（状态机需在调用方已处于 INVESTIGATING）。"""
+    inc.rca = rca
+    inc.rca_source = source
+    inc.root_cause = rca.root_cause
+    inc.failure_code = None
+    inc.status = transition(inc.status, S.ROOT_CAUSE_FOUND)

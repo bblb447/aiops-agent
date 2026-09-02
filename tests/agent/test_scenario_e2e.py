@@ -98,3 +98,42 @@ def test_e2e_cpu_gc_release_scenario(monkeypatch, tmp_path):
     assert any("95.2" in str(m.content) for m in tool_msgs)
     # timeline 记录了 Agent 结论。
     assert any("Agent 结论" in t.get("event", "") for t in got.timeline)
+
+
+def test_e2e_final_answer_json_fallback(monkeypatch, tmp_path):
+    # 模型不调 submit 工具，仅用 final_answer 带 <rca_result> 区块 → 兜底通道成立。
+    runbook = tmp_path / "cpu-high.md"
+    runbook.write_text("# CPU 高排查\n\nCPU 高通常与内存泄漏或发布有关。", encoding="utf-8")
+    monkeypatch.setattr("app.tools.knowledge.RUNBOOK_DIR", tmp_path)
+    monkeypatch.setattr(httpx, "get", _prometheus_fixture)
+
+    final_text = (
+        "调查完成：判断为 CPU 热点。\n<rca_result>\n"
+        + json.dumps({
+            "root_cause": "内存泄漏",
+            "confidence": 0.72,
+            "evidence": [{"source": "prometheus", "fact": "cpu_usage=95.2"}],
+            "hypotheses": ["内存泄漏", "流量突增"],
+        }, ensure_ascii=False)
+        + "\n</rca_result>"
+    )
+    plan = [
+        {"name": "query_metric", "arguments": {"metric": "cpu_usage", "target": "server-01"}},
+        {"name": "final_answer", "arguments": {"answer": final_text}},
+    ]
+    model = _ScriptedDiagnosisModel(plan)
+    monkeypatch.setattr("app.llm.provider.LiteLLMProvider.make_agent_model", lambda self: model)
+
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical",
+                     target="server-01", observed_value=95.2, threshold=80)
+    s = Settings(llm_api_key="sk-test", rag_enabled=False, prometheus_url="http://prom:9090")
+    investigate(s, svc, inc.incident_id, tools=build_tools(s))
+
+    got = svc.get(inc.incident_id)
+    assert got.status == S.ROOT_CAUSE_FOUND
+    assert got.rca_source == "final_answer"
+    assert got.rca.root_cause == "内存泄漏"
+    assert got.rca.confidence == 0.72
+    assert got.rca.evidence[0].fact == "cpu_usage=95.2"
+    assert got.root_cause == "内存泄漏"
