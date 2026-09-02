@@ -1960,8 +1960,14 @@ rca=有效       status=ROOT_CAUSE_FOUND
 
 - 只读工具调用上限 `max_read_tools`：实验值 4。
 - `max_steps`（模型层总步数上限）保留作为兜底安全网，不替代只读预算。
-- 固化方式：写入诊断 prompt（"你最多只能调用 N 次只读工具"），建议暴露为配置
-  `agent_max_read_tools`（V1.6 落地时加 Settings 字段 + prompt 变量）。
+- 已落地（提交 1a088a4）：写入诊断 prompt（"你最多只能调用 N 次只读工具"），
+  Settings 增 `agent_max_read_tools`（默认 4，env `AGENT_MAX_READ_TOOLS`）+ prompt 变量注入。
+
+> **软预算澄清**：V1.6 当前实现为 **Prompt-level（软预算）**——由模型自主遵守，
+> 代码层**没有**独立的只读调用计数器，也不在超预算时阻止工具执行；`agent.run()` 仍只受
+> `agent_max_steps` 总步数限制。准确表述是"系统要求 Agent 最多调用 N 次只读工具并在固定场景
+> 验证模型遵守"，**不是**"系统保证最多只能调用 N 次"。未来若模型纪律在多场景被证伪，
+> 再研究 Code-enforced Read Budget（工具中间件/计数器限流），不提前硬限流。
 
 实验原则：**一次只改一个变量**。预算/判据若分阶段，先只加一个再观察，
 避免"到底是哪个因素让模型收敛"不可归因。
@@ -2008,10 +2014,15 @@ Budget + Convergence + Forced Stop 实验 2
 据实把强制收尾补进 V1.6
 ```
 
-## 42.9 待固化清单（V1.6 实施）
+## 42.9 V1.6 落地项 / 后续验证项
 
-1. `prompts/diagnose.txt` 加入调查预算 + 收敛判据（把实验的 Convergence Prompt 固化到生产 prompt）。
-2. Settings 增 `agent_max_read_tools`（默认 4），prompt 变量注入。
-3. 用 `scripts/experiment_convergence.py` 在不同场景复验（多来源场景、日志/变更场景）。
-4. P1：Tool/Final confidence 严格校验统一（§41.7 已知项）。
+**已落地（提交 1a088a4）**
+1. `prompts/diagnose.txt` + 默认 prompt 加入调查预算 + 收敛判据（生产 prompt 固化）。
+2. Settings 增 `agent_max_read_tools`（默认 4，env `AGENT_MAX_READ_TOOLS`），prompt 变量注入。
+   （真实冒烟复验 PASS：模型按预期 tool 通道提交，无过度调查；全量 236 passed）
+
+**后续验证 / 待办**
+3. 用 `scripts/experiment_convergence.py` 扩场景复验：多来源场景、日志/变更场景
+   （当前验证仅在"一次查询即可判断"的 CPU 固定场景）。
+4. P1：Tool/Final confidence 严格校验统一（§41.7 已知项，软预算外的一致性收口）。
 5. P2：Tool Adapter 显式 `exposed_methods`（§41.7 已知项）。
