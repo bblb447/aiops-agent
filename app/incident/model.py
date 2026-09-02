@@ -33,6 +33,13 @@ class Incident(BaseModel):
     status: IncidentStatus = IncidentStatus.NEW
     start_time: str = Field(default_factory=_now)
     affected_assets: list[str] = Field(default_factory=list)
+    alert_id: str | None = None
+    source: str | None = None
+    target: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    observed_value: float | None = None
+    threshold: float | None = None
     symptoms: list[str] = Field(default_factory=list)
     hypotheses: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)

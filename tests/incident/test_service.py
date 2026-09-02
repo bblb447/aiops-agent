@@ -41,3 +41,23 @@ def test_default_severity_is_major():
     svc = IncidentService()
     inc = svc.create("CPU 高", "order-service")
     assert inc.severity == IncidentSeverity.MAJOR
+
+
+def test_create_with_alert_context():
+    svc = IncidentService()
+    inc = svc.create(
+        "CPU 高", "order-service", "critical",
+        alert_id="alert-001", source="prometheus", target="server-01",
+        labels={"instance": "server-01", "job": "node"},
+        annotations={"summary": "CPU usage high"},
+        observed_value=95.2, threshold=80,
+    )
+    assert inc.alert_id == "alert-001"
+    assert inc.source == "prometheus"
+    assert inc.target == "server-01"
+    assert inc.labels == {"instance": "server-01", "job": "node"}
+    assert inc.annotations == {"summary": "CPU usage high"}
+    assert inc.observed_value == 95.2
+    assert inc.threshold == 80
+    got = svc.get(inc.incident_id)
+    assert got.alert_id == "alert-001" and got.observed_value == 95.2

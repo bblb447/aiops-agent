@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.incident.model import Incident, IncidentSeverity, IncidentStatus
 from app.incident.service import IncidentService
@@ -12,6 +12,14 @@ class CreateIncidentRequest(BaseModel):
     title: str
     service: str
     severity: IncidentSeverity = IncidentSeverity.MAJOR
+    source: str | None = None
+    alert_id: str | None = None
+    target: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    observed_value: float | None = None
+    threshold: float | None = None
+    affected_assets: list[str] = Field(default_factory=list)
 
 
 def _svc() -> IncidentService:
@@ -21,7 +29,13 @@ def _svc() -> IncidentService:
 
 @router.post("", response_model=Incident)
 def create_incident(req: CreateIncidentRequest, svc: IncidentService = Depends(_svc)):
-    return svc.create(req.title, req.service, req.severity)
+    return svc.create(
+        req.title, req.service, req.severity,
+        alert_id=req.alert_id, source=req.source, target=req.target,
+        labels=req.labels, annotations=req.annotations,
+        observed_value=req.observed_value, threshold=req.threshold,
+        affected_assets=req.affected_assets,
+    )
 
 
 @router.post("/{incident_id}/investigate")

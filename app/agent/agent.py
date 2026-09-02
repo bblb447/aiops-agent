@@ -12,13 +12,15 @@ import inspect
 import json
 from pathlib import Path
 
-from smolagents import ToolCallingAgent, LiteLLMModel
+from smolagents import ToolCallingAgent
 from smolagents.tools import Tool as SmolTool
 
 from app.config import Settings
 from app.incident.service import IncidentService
 from app.incident.model import IncidentStatus as S
 from app.incident.state import transition
+from app.llm.base import LLMProvider
+from app.llm.provider import LiteLLMProvider
 
 # prompts/ 位于项目根目录（本文件在 app/agent/ 下，向上三级）。
 PROMPT_FILE = Path(__file__).resolve().parent.parent.parent / "prompts" / "diagnose.txt"
@@ -26,9 +28,33 @@ PROMPT_FILE = Path(__file__).resolve().parent.parent.parent / "prompts" / "diagn
 _DEFAULT_PROMPT = (
     "你是 AIOps 诊断 Agent。请调查以下故障并给出带证据的根因结论。\n"
     "故障: {title}，服务: {service}，级别: {severity}。\n"
+    "告警上下文: {context}\n"
     "可用只读工具: {tool_names}\n"
     "步骤: 先查监控和日志收集证据，再给出结论与置信度。"
 )
+
+
+def _build_context(inc) -> str:
+    parts = []
+    if inc.alert_id:
+        parts.append(f"alert_id={inc.alert_id}")
+    if inc.source:
+        parts.append(f"source={inc.source}")
+    if inc.target:
+        parts.append(f"target={inc.target}")
+    if inc.observed_value is not None:
+        parts.append(f"observed_value={inc.observed_value}")
+    if inc.threshold is not None:
+        parts.append(f"threshold={inc.threshold}")
+    if inc.affected_assets:
+        parts.append(f"affected_assets={','.join(inc.affected_assets)}")
+    if inc.labels:
+        parts.append(f"labels={inc.labels}")
+    if inc.annotations:
+        parts.append(f"annotations={inc.annotations}")
+    if inc.start_time:
+        parts.append(f"start_time={inc.start_time}")
+    return "; ".join(parts)
 
 
 def _load_prompt_template() -> str:
@@ -124,16 +150,11 @@ def _noop() -> str:
     return "该工具未暴露任何可调用方法"
 
 
-def build_agent(settings: Settings, tools: list) -> ToolCallingAgent:
-    model = LiteLLMModel(
-        model_id=f"openai/{settings.llm_model}",
-        api_base=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        # DeepSeek 思考模式不接受 tool_choice="required"（会抛 BadRequestError），
-        # 显式设为 "auto" 以兼容。
-        tool_choice="auto",
-        temperature=0.1,
-    )
+def build_agent(settings: Settings, tools: list,
+                provider: LLMProvider | None = None) -> ToolCallingAgent:
+    # 模型由 LLM Provider 产出（可插拔）；Agent 不再直接 new 模型。
+    provider = provider or LiteLLMProvider(settings)
+    model = provider.make_agent_model()
     return ToolCallingAgent(tools=adapt_tools(tools), model=model, max_steps=settings.agent_max_steps)
 
 
@@ -153,6 +174,7 @@ def investigate(settings: Settings, svc: IncidentService,
         service=inc.service,
         severity=inc.severity.value,
         tool_names=tool_names,
+        context=_build_context(inc),
     )
     try:
         conclusion = agent.run(prompt)

@@ -9,17 +9,22 @@ class LoggingTool:
     def __init__(self, settings: Settings) -> None:
         self._url = settings.loki_url
 
-    def search_logs(self, query: str, limit: int = 50) -> ToolResult:
+    def search_logs(self, query: str, limit: int = 50,
+                    start: int | None = None, end: int | None = None) -> ToolResult:
         if not self._url:
             return ToolResult(success=False, tool="search_logs",
                               error="未配置 Loki 地址(loki_url)")
-        # Loki query_range 必需 start/end（Unix 纳秒），默认查最近 30 分钟。
+        # Loki query_range 必需 start/end（Unix 纳秒）；未显式指定时默认查最近 30 分钟。
         now = time.time_ns()
+        if start is None:
+            start = now - 30 * 60 * 10**9
+        if end is None:
+            end = now
         params = {
             "query": query,
             "limit": limit,
-            "start": str(now - 30 * 60 * 10**9),
-            "end": str(now),
+            "start": str(start),
+            "end": str(end),
         }
         try:
             resp = httpx.get(f"{self._url}/loki/api/v1/query_range", params=params, timeout=10)

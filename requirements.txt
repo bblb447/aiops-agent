@@ -1,4 +1,4 @@
-smolagents>=1.27
+smolagents==1.26.0
 litellm==1.99.0
 fastapi==0.141.1
 uvicorn[standard]==0.52.4

@@ -21,12 +21,31 @@ def test_metric_queries_prometheus(monkeypatch):
     assert "prom:9090" in captured["url"]
 
 
-def test_unconfigured_prometheus_returns_failure():
+def test_metric_range_queries_prometheus(monkeypatch):
+    # 时间序列区间查询：start/end/step 必须传给 /api/v1/query_range，
+    # 这是时间关联 RCA（CPU 何时开始上涨）的基础。
+    s = Settings(prometheus_url="http://prom:9090")
+    tool = MonitoringTool(s)
+    captured = {}
+    def fake_get(url, params=None, timeout=None):
+        captured["url"] = str(url); captured["params"] = params
+        return httpx.Response(200, request=httpx.Request("GET", str(url)),
+                              json={"status": "success", "data": {"result": [{"values": [[0, "80"], [60, "95"]]}]}})
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = tool.query_metric_range("cpu_usage", target="server-01", start=1000, end=2000, step="60s")
+    assert r.success and r.data["data"]["result"][0]["values"]
+    assert "/api/v1/query_range" in captured["url"]
+    assert captured["params"]["query"] == 'cpu_usage{instance=~"server-01.*"}'
+    assert captured["params"]["start"] == 1000
+    assert captured["params"]["end"] == 2000
+    assert captured["params"]["step"] == "60s"
+
+
+def test_unconfigured_prometheus_range_returns_failure():
     tool = MonitoringTool(Settings())
-    r = tool.query_metric("cpu_usage")
+    r = tool.query_metric_range("cpu_usage", start=0, end=1, step="60s")
     assert not r.success
-    assert "未配置" in r.error
-    assert r.tool == "query_metric"
+    assert r.tool == "query_metric_range"
 
 
 def test_unconfigured_loki_returns_failure():
@@ -34,6 +53,40 @@ def test_unconfigured_loki_returns_failure():
     r = tool.search_logs("error")
     assert not r.success
     assert "未配置" in r.error
+
+
+def test_search_logs_accepts_explicit_window(monkeypatch):
+    # 日志查询必须支持显式 start/end，才能围绕 incident 起止时间关联分析。
+    s = Settings(loki_url="http://loki:3100")
+    tool = LoggingTool(s)
+    captured = {}
+    def fake_get(url, params=None, timeout=None):
+        captured["url"] = str(url); captured["params"] = params
+        return httpx.Response(200, request=httpx.Request("GET", str(url)),
+                              json={"status": "success", "data": {"result": []}})
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = tool.search_logs("ERROR", limit=20, start=100, end=200)
+    assert r.success
+    assert "/loki/api/v1/query_range" in captured["url"]
+    assert captured["params"]["start"] == "100"
+    assert captured["params"]["end"] == "200"
+    assert captured["params"]["limit"] == 20
+    assert captured["params"]["query"] == "ERROR"
+
+
+def test_search_logs_defaults_to_30min_window(monkeypatch):
+    # 未显式给时间窗时，保持默认"最近 30 分钟"行为（向后兼容）。
+    s = Settings(loki_url="http://loki:3100")
+    tool = LoggingTool(s)
+    captured = {}
+    def fake_get(url, params=None, timeout=None):
+        captured["params"] = params
+        return httpx.Response(200, request=httpx.Request("GET", str(url)),
+                              json={"status": "success", "data": {"result": []}})
+    monkeypatch.setattr(httpx, "get", fake_get)
+    tool.search_logs("ERROR")
+    start = int(captured["params"]["start"]); end = int(captured["params"]["end"])
+    assert end - start == 30 * 60 * 10**9
 
 
 def test_unconfigured_cmdb_returns_failure():

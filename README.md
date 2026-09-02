@@ -40,7 +40,10 @@ uvicorn app.main:app --reload
 # 4. 创建 Incident 并触发调查
 curl -X POST localhost:8000/api/v1/incidents \
   -H 'Content-Type: application/json' \
-  -d '{"title": "order-service CPU 持续高", "service": "order-service", "severity": "critical"}'
+  -d '{"title": "order-service CPU 持续高", "service": "order-service", "severity": "critical", \
+       "source": "prometheus", "alert_id": "alert-001", "target": "server-01", \
+       "labels": {"instance": "server-01"}, "annotations": {"summary": "CPU high"}, \
+       "observed_value": 95.2, "threshold": 80, "affected_assets": ["server-01"]}'
 # 得到 incident_id 后：
 curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 ```
@@ -48,7 +51,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 188 passed
+python -m pytest   # 201 passed
 ```
 
 ## 配置（.env）

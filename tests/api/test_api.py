@@ -45,6 +45,38 @@ def test_create_with_invalid_severity_returns_422():
     assert r.status_code == 422
 
 
+def test_create_incident_with_alert_context():
+    # 生产告警上下文（alert_id/source/target/labels/annotations/observed_value/threshold
+    # /affected_assets）必须完整落进 Incident，RCA 才有真实故障上下文可用。
+    svc = IncidentService()
+    app = create_app(Settings(llm_api_key="sk-test"), svc, _fake_investigator)
+    c = TestClient(app)
+    payload = {
+        "title": "order-service CPU high",
+        "service": "order-service",
+        "severity": "critical",
+        "source": "prometheus",
+        "alert_id": "alert-001",
+        "target": "server-01",
+        "labels": {"instance": "server-01"},
+        "annotations": {"summary": "CPU high"},
+        "observed_value": 95.2,
+        "threshold": 80,
+        "affected_assets": ["server-01"],
+    }
+    r = c.post("/api/v1/incidents", json=payload)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["alert_id"] == "alert-001"
+    assert body["source"] == "prometheus"
+    assert body["target"] == "server-01"
+    assert body["labels"] == {"instance": "server-01"}
+    assert body["annotations"] == {"summary": "CPU high"}
+    assert body["observed_value"] == 95.2
+    assert body["threshold"] == 80
+    assert body["affected_assets"] == ["server-01"]
+
+
 def test_investigate_second_time_conflict():
     # 二次调查：状态已非 NEW，必须返回 409 而非裸 500。
     svc = IncidentService()

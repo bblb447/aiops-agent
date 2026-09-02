@@ -48,6 +48,24 @@ class _FailingAgent(_FakeAgent):
     def run(self, prompt):
         raise RuntimeError("LLM 网络超时")
 
+
+def test_investigate_prompt_includes_alert_context(monkeypatch):
+    # 告警上下文（alert_id/target/observed_value/threshold）必须注入 prompt，
+    # Agent 才能基于真实故障数据做 RCA，而不是只靠 title。
+    svc = IncidentService()
+    inc = svc.create(
+        "CPU 高", "order-service", "critical",
+        alert_id="alert-001", source="prometheus", target="server-01",
+        observed_value=95.2, threshold=80,
+    )
+    cap = _CaptureAgent()
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: cap)
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    assert "alert-001" in cap.prompt
+    assert "server-01" in cap.prompt
+    assert "95.2" in cap.prompt
+    assert "80" in cap.prompt
+
 def test_investigate_escalates_on_llm_failure(monkeypatch):
     svc = IncidentService()
     inc = svc.create("连接超时", "payment-service", "critical")
@@ -140,3 +158,28 @@ def test_build_agent_tool_choice_auto():
     agent = build_agent(s, [])
     assert isinstance(agent.model, LiteLLMModel)
     assert agent.model.kwargs.get("tool_choice") == "auto"
+
+
+def test_build_agent_uses_injected_provider():
+    # Agent 的模型必须经由 LLM Provider 产出（模型可插拔），而非 agent 内部
+    # 直接 new 模型；注入的 provider.make_agent_model 结果要被 agent 使用。
+    from smolagents import LiteLLMModel
+    from app.agent.agent import build_agent
+
+    class _FakeProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def make_agent_model(self):
+            self.calls += 1
+            return LiteLLMModel(model_id="openai/provided-model", api_key="x", tool_choice="auto")
+
+        def chat(self, messages):
+            return "x"
+
+    s = Settings(llm_api_key="sk-test")
+    p = _FakeProvider()
+    agent = build_agent(s, [], provider=p)
+    assert p.calls == 1
+    assert isinstance(agent.model, LiteLLMModel)
+    assert agent.model.model_id == "openai/provided-model"
