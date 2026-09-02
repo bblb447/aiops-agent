@@ -137,7 +137,10 @@ def main() -> int:
 
     got = svc.get(inc.incident_id)
     transcript = _dump(holder["model"].calls[-1]) if holder.get("model") and holder["model"].calls else ""
-    submitted = got.rca is not None
+    rca_valid = got.rca is not None
+    rca_source = got.rca_source  # "tool" / "final_answer" / None
+    # transcript 中出现 submit_rca_result（工具调用或 ToolResult）说明模型真的调了工具。
+    submit_tool_called = "submit_rca_result" in transcript
 
     print("\n==== AIOps Agent V1.5 真实 LLM 冒烟验收 ====")
     print(f"model          : {settings.llm_model}")
@@ -148,11 +151,14 @@ def main() -> int:
     print(f"    search_runbook 调用: {'yes' if 'search_runbook' in transcript else 'no'}")
     print("[2] ToolResult 读取")
     print(f"    对话中出现实测值 95.2: {'yes' if '95.2' in transcript else 'no'}")
-    print("[3] submit_rca_result")
-    print(f"    submit_attempted   : {submitted}")
-    print(f"    rca_result 存在     : {'yes' if submitted else 'no'}")
+    print("[3] RCA 结果来源（区分 tool path / final fallback）")
+    print(f"    rca 有效            : {'yes' if rca_valid else 'no'}")
+    print(f"    rca_source          : {rca_source}")
+    print(f"    submit 工具被调用     : {'yes' if submit_tool_called else 'no'}")
+    print(f"    tool path 命中      : {'yes' if rca_source == 'tool' else 'no'}")
+    print(f"    final fallback 命中 : {'yes' if rca_source == 'final_answer' else 'no'}")
     print("[4] RCAResult 合法性")
-    if submitted:
+    if rca_valid:
         r = got.rca
         print(f"    root_cause : {r.root_cause}")
         print(f"    confidence : {r.confidence}")
@@ -165,7 +171,7 @@ def main() -> int:
     print(f"    status      : {got.status.value}")
     print(f"    failure_code: {got.failure_code}")
 
-    ok = submitted and got.status.value == "ROOT_CAUSE_FOUND"
+    ok = rca_valid and got.status.value == "ROOT_CAUSE_FOUND"
     if not ok and holder.get("model") and holder["model"].outputs:
         last = holder["model"].outputs[-1]
         txt = last.content if isinstance(last.content, str) else json.dumps(last.content, ensure_ascii=False, default=str)

@@ -13,7 +13,7 @@
 - **模型可插拔**：LLM Provider 抽象（`make_agent_model` 产出 Agent 模型），仅需配置 Endpoint / Key / Model，不绑定厂商。
 - **告警上下文入 Incident**：创建时携带 `source/alert_id/target/labels/annotations/observed_value/threshold/affected_assets`，注入诊断 prompt，RCA 有真实故障数据可用。
 - **时间序列查询**：`query_metric_range`（Prometheus range query）+ `search_logs` 可指定时间窗，支撑时间关联分析。
-- **结构化 RCA（V1.5）**：Agent 在诊断循环内通过 `submit_rca_result` 提交 `RCAResult`（`root_cause / confidence / evidence[] / hypotheses[]`），写入 `Incident.rca`；`root_cause` 兼容派生。无有效提交不得 `ROOT_CAUSE_FOUND`；失败归因 `failure_code`（六码：NO_SUBMISSION / MISSING_EVIDENCE / LOW_CONFIDENCE / LLM_ERROR / TOOL_ERROR / MAX_STEPS），`final_answer` 仅作结束信号。
+- **结构化 RCA（V1.5）**：`RCAResult`（`root_cause / confidence / evidence[] / hypotheses[]`）写入 `Incident.rca`，`rca_source` 记录来源。混合收尾：首选 `submit_rca_result` 工具，兜底为 `final_answer` 中 `<rca_result>` 标签的严格 JSON，两条通道共用同一 schema 校验（`rca_source` = tool / final_answer）。无有效 RCA 不得 `ROOT_CAUSE_FOUND`；失败归因 `failure_code`（六码：NO_SUBMISSION / MISSING_EVIDENCE / LOW_CONFIDENCE / LLM_ERROR / TOOL_ERROR / MAX_STEPS）。真实模型冒烟验证见 `scripts/smoke_real_llm.py`。
 
 ## 技术栈
 
@@ -54,7 +54,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 219 passed
+python -m pytest   # 234 passed
 ```
 
 ## 配置（.env）

@@ -28,10 +28,11 @@ class SubmitRCATool:
     def submit_rca_result(self, root_cause: str = "", confidence: float = None,
                           evidence: list = None, hypotheses: list = None,
                           recommendations: list = None, summary: str = None) -> ToolResult:
-        """提交本 Incident 的最终 RCA 结论，成功即代表根因已定位。
+        """提交本 Incident 的最终 RCA 结论（首选提交通道），成功即代表根因已定位。
 
-        这是本次调查的【必选收尾步骤】：当你已收集到足以判断根因的证据时，
-        必须调用本工具结束调查，然后才调用 final_answer。不要用 final_answer 代替本工具。
+        当证据足以判断根因时，优先调用本工具结束调查。若模型无法调用本工具，
+        才允许改在 final_answer 中输出 <rca_result> 标签包裹的严格 JSON 作为兜底；
+        本工具是首选，不要为了省事直接跳过。
 
         参数:
           - root_cause (string): 根因结论，简短明确，如 "deployment_regression"
