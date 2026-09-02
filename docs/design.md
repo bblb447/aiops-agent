@@ -1880,8 +1880,15 @@ API 层 `{"conclusion": ..., "incident": ...}` 结构不变。
    `RCAResult.evidence`（结构化、支撑 RCA 结论的证据）职责不同。
 9. `Incident.rca_source` 记录结果来源通道，用于统计工具/兜底真实命中率。
 
-**V1.6 待做（不在本轮）**：调查收敛机制（Evidence/Investigation Budget、Convergence Criteria）——
-真实模型冒烟暴露"只要还有没查过的指标就继续查、直到 max_steps"的过度调查问题。
+**V1.6 待做（不在本轮）**：
+- 调查收敛机制（Evidence/Investigation Budget、Convergence Criteria）——真实模型冒烟暴露
+  "只要还有没查过的指标就继续查、直到 max_steps"的过度调查问题。
+- **已知一致性问题（已实测确认，暂不修）**：两条通道对 confidence 的校验不完全一致——工具路径手动拒绝
+  字符串/布尔（`"0.8"`、`True`），而 final 路径经 Pydantic v2 lax 模式会把 `"0.8"` coerce 成 0.8、
+  `True` coerce 成 1.0（比工具路径宽松）。不影响错误状态；收紧会让 final 路径拒掉模型偶发的字符串数字，
+  反而可能降低真实成功率。V1.6 若统一，倾向收紧 RCAResult（StrictFloat 或严格 validator），两通道共用。
+- **Tool Adapter 长期项**：`_wrap_plain_tool` 用 `dir()` 暴露所有公开 callable，存在把 `refresh_cache()` 等
+  辅助方法暴露给 Agent 的隐患；V2 建议改显式白名单（如 `exposed_methods = [...]`）。MVP 只读场景暂不阻塞。
 
 ## 41.8 对应实现位置（已实现，提交 06c3379 / 15b01d4 后续）
 

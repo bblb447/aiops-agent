@@ -20,7 +20,7 @@
 | 层 | 技术 |
 |---|---|
 | Agent 编排 | smolagents `ToolCallingAgent` |
-| LLM | DeepSeek（OpenAI 兼容），LiteLLM 接入 |
+| LLM | OpenAI 兼容 + LiteLLM Provider（可插拔；默认/已验证：DeepSeek） |
 | API | FastAPI + uvicorn |
 | 语义检索 | fastembed（`BAAI/bge-small-zh-v1.5`）+ chromadb |
 | 数据源 | Prometheus / Loki / CMDB / runbooks |
