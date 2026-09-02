@@ -1854,7 +1854,7 @@ API 层 `{"conclusion": ..., "incident": ...}` 结构不变。
 8. `Incident.evidence`（legacy list[str]，调查过程原始证据摘要）本轮保留不动；
    `RCAResult.evidence`（结构化、支撑 RCA 结论的证据）职责不同。
 
-## 41.8 对应实现位置（规划）
+## 41.8 对应实现位置（已实现，提交 06c3379）
 
 ```text
 app/incident/model.py      EvidenceItem / RCAResult；Incident 增 rca / failure_code

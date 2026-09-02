@@ -16,6 +16,8 @@ from app.tools.base import ToolResult
 
 class SubmitRCATool:
     def __init__(self, svc: IncidentService, incident_id: str) -> None:
+        # 仅语义绑定（本工具属于哪个 Incident 的 Run）；本工具不写 Incident，
+        # 持久化统一由 investigate() 在事务边界完成。
         self._svc = svc
         self._incident_id = incident_id
         self.submit_attempted = False
@@ -46,8 +48,11 @@ class SubmitRCATool:
             errors.append("evidence 至少需要 1 条")
         else:
             for i, item in enumerate(evidence):
-                src = (item or {}).get("source")
-                fact = (item or {}).get("fact")
+                if not isinstance(item, dict):
+                    errors.append(f"evidence[{i}] 必须是包含 source/fact 的对象")
+                    continue
+                src = item.get("source")
+                fact = item.get("fact")
                 if not src or not str(src).strip() or not fact or not str(fact).strip():
                     errors.append(f"evidence[{i}] 的 source 和 fact 不能为空")
 

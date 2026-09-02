@@ -50,6 +50,18 @@ def test_submit_rejects_evidence_item_missing_field():
     assert tool.last_validation_code == "MISSING_EVIDENCE"
 
 
+def test_submit_rejects_non_dict_evidence_item():
+    # evidence 元素若不是对象（如字符串/数字）不得抛异常，必须归 MISSING_EVIDENCE。
+    _, tool = _tool("INC-1")
+    r = tool.submit_rca_result(
+        root_cause="x", confidence=0.8,
+        evidence=["这是错误格式", {"source": "s", "fact": "f"}],
+    )
+    assert r.success is False
+    assert tool.last_validation_code == "MISSING_EVIDENCE"
+    assert tool.rca_result is None
+
+
 def test_submit_rejects_empty_root_cause():
     _, tool = _tool("INC-1")
     r = tool.submit_rca_result(root_cause="  ", confidence=0.8,
