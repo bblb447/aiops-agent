@@ -1,8 +1,8 @@
 # AIOps Agent
 
-基于 **smolagents** 的智能运维（AIOps）诊断 Agent：从告警触发到根因结论的只读闭环。Agent 动态调用监控、日志、CMDB、Runbook 工具收集证据，给出 Evidence-based 根因分析。
+基于 **smolagents** 的 **Evidence-driven AIOps Diagnostic Agent**：从告警触发到根因结论的只读闭环。Agent 动态调用监控、日志、CMDB、Runbook 工具收集证据，给出带证据、带置信度的根因分析。
 
-> **MVP 定位**：只读诊断闭环，不执行生产写操作。V2 增加 K8s/网络/审批/审计，V3 增加多 Agent/MCP/自愈（详见 [docs/design.md](docs/design.md)）。
+> **定位**：Agent-first 的故障诊断/RCA 引擎，不是告警管理平台（告警治理交给平台层，本项目可作其独立 RCA 子系统）。当前为只读诊断闭环，不执行生产写操作。V1.5 结构化 RCA 设计已定稿（详见 [docs/design.md](docs/design.md) 第 41 章）。
 
 ## 功能
 
@@ -10,7 +10,12 @@
 - **多源运维数据关联**：Prometheus 指标、Loki 日志、CMDB 服务信息、Runbook 知识。
 - **RAG 语义检索**：Runbook 按标题切块，`bge-small-zh` 嵌入 + chromadb 向量检索，返回 top-k 相关排查步骤；依赖/模型不可用时自动降级关键词搜索。
 - **Incident 状态机**：NEW → TRIAGING → INVESTIGATING → … → RESOLVED / ESCALATED / REOPEN，非法转移抛错，全表参数化测试覆盖。
-- **模型可插拔**：LLM Provider 抽象，仅需配置 Endpoint / Key / Model，不绑定厂商。
+- **模型可插拔**：LLM Provider 抽象（`make_agent_model` 产出 Agent 模型），仅需配置 Endpoint / Key / Model，不绑定厂商。
+- **告警上下文入 Incident**：创建时携带 `source/alert_id/target/labels/annotations/observed_value/threshold/affected_assets`，注入诊断 prompt，RCA 有真实故障数据可用。
+- **时间序列查询**：`query_metric_range`（Prometheus range query）+ `search_logs` 可指定时间窗，支撑时间关联分析。
+
+> **V1.5（已定稿，见 docs/design.md 第 41 章）**：`RCAResult` 结构化 RCA —— Agent 在诊断循环内通过 `submit_rca_result` 提交
+> `root_cause / confidence / evidence / hypotheses`，`final_answer` 仅作结束信号；失败归因到 `failure_code`（六码词表）。待实现。
 
 ## 技术栈
 
@@ -78,7 +83,7 @@ app/
 prompts/         Agent 诊断 prompt 模板
 runbooks/        Runbook 知识（RAG 数据源）
 tests/           pytest 全量测试
-docs/design.md   完整设计文档（39+1 章）
+docs/design.md   完整设计文档（41 章，含结构化 RCA 定稿）
 ```
 
 ## License

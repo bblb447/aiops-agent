@@ -1,6 +1,6 @@
 # 基于 smolagents 的 AIOps Agent 系统设计文档
 
-**文档版本：** V1.0
+**文档版本：** V1.1（V1.5 结构化 RCA 设计已定稿，见第 41 章）
 **项目名称：** AIOps Agent
 **核心框架：** smolagents
 **文档类型：** 系统设计文档
@@ -411,11 +411,16 @@ Agent 不应该一次性调用大量工具。
   "evidence": [],
   "root_cause": null,
   "remediation": [],
-  "verification": null
+  "verification": null,
+  "rca": null,
+  "failure_code": null
 }
 ```
 
 Incident 是 Agent 整个运行周期的核心上下文。
+
+> V1.5 起：结构化 RCA 存 `rca`（`RCAResult`，唯一权威来源），`root_cause` 作为兼容派生字段，
+> `failure_code` 记录"为什么没有形成有效 RCA"的顶层原因。完整定义见 **第 41 章**。
 
 ---
 
@@ -454,6 +459,10 @@ VERIFYING
 ```
 
 这样可以防止 Agent 在长流程中丢失状态。
+
+> V1.5 规则：`ROOT_CAUSE_FOUND` **必须**由 Agent 成功提交合法 `RCAResult`（调用 `submit_rca_result`）
+> 才会成立；仅调用 `final_answer` 不算根因已定位。无有效提交 → `INSUFFICIENT_EVIDENCE`
+> （带 `failure_code`）；LLM 异常 / 超步数 → `ESCALATED`。判定细节见 **第 41 章**。
 
 ---
 
@@ -698,17 +707,23 @@ D. 最近版本发布
 
 Agent 分别收集证据，然后进行排序。
 
-输出：
+> **输出结构以第 41 章为准（V1.5 已定稿）**：RCA 结果用内联 `EvidenceItem`（source/fact），
+> 暂不引入证据 ID 注册表；早期草稿的 `evidence_ids` 方案已被替换。
+
+输出（定稿版）：
 
 ```json
 {
   "root_cause": "deployment_regression",
   "confidence": 0.87,
-  "evidence_ids": [
-    "E001",
-    "E004",
-    "E006"
-  ]
+  "evidence": [
+    { "source": "prometheus", "fact": "CPU 从 42% 涨到 95%" },
+    { "source": "loki",       "fact": "Full GC 显著增加" },
+    { "source": "change",     "fact": "故障前刚发布 v2.3.1" }
+  ],
+  "hypotheses": ["deployment_regression", "traffic_spike"],
+  "recommendations": ["回滚 v2.3.1"],
+  "summary": "疑似最近发布引入回归"
 }
 ```
 
@@ -1224,6 +1239,10 @@ ESCALATE
 
 Agent 不允许根据缺失数据自行编造结果。
 
+> V1.5 起，失败顶层归因统一落 `Incident.failure_code`（六码词表 + 状态映射见 **第 41 章**）。
+> 注意：工具失败走 `ToolResult(success=False)` 返回给 Agent 继续调查（**不**直接 ESCALATED），
+> 只有 LLM 层异常 / 超步数才转 ESCALATED。
+
 ---
 
 # 29. Agent 最大步数
@@ -1607,6 +1626,23 @@ LLM + SSH
 
 > **以 smolagents 为 Agent 编排核心，以监控、日志、CMDB、网络、Kubernetes 等工具为执行基础，以知识库为运维知识来源，以策略与审批机制保证安全，实现故障发现、诊断、根因分析、处置和验证的 AIOps 智能运维系统。**
 
+### 38.1 与平台类产品（如 Keep）的定位区隔（定稿）
+
+项目定位为 **Evidence-driven AIOps Diagnostic Agent（Agent-first）**，而不是"小型告警管理平台（Platform-first）"：
+
+| | Keep（keephq/keep） | 本项目 |
+|---|---|---|
+| 定位 | 完整 AIOps / 告警治理平台 | Agent-native Incident Investigation / RCA 引擎 |
+| 核心抽象 | Provider / Workflow / Alert / Incident | Agent / Tool / Evidence / Hypothesis / RCA |
+| 告警治理（去重/关联/富化） | 强 | 不做，让给平台层 |
+| 差异化点 | 平台广度 | 证据→假设→验证→RCA 的闭环深度 |
+
+**不追赶** Keep 的功能数量（Provider 生态、Workflow、UI、Dashboard）。
+**聚焦** Agent 诊断能力，并把 RCA 输出**结构化、机器可读**（见第 41 章）。
+
+**演进关系**：未来本项目可作为 Keep 等平台通过 HTTP Provider 调用的**独立 RCA 子系统**——
+平台负责告警接入/治理/Incident 编排，本项目负责 Incident Investigation / Evidence / RCA，结果回写平台。
+
 ---
 
 ## 39. 重点设计建议
@@ -1671,3 +1707,159 @@ search_runbook(query)
 
 单元测试不下载模型：chunker 切块边界、retriever 用 fake 向量验证 top-k 排序/空库/嵌入失败、
 KnowledgeTool 验证 RAG 失败降级关键词。真实模型检索用冒烟脚本单独验证（不跑在 CI）。
+
+---
+
+# 41. 结构化 RCA 设计（V1.5，已定稿）
+
+> 定位结论（与 Keep / keephq/keep 对比后）：本项目不是"小型 Keep/告警平台"，而是
+> **Evidence-driven AIOps Diagnostic Agent**，未来可作为独立 RCA 子系统被 Keep 等平台
+> 通过 HTTP Provider 调用。因此 RCA 输出必须**机器可读**，不能只是一段自然语言总结。
+
+V1.5 核心改动：把 `root_cause`（字符串）升级为结构化 `RCAResult`
+（含 confidence / evidence / hypotheses），由 Agent 在诊断循环内调用 `submit_rca_result` 提交，
+`investigate()` 统一落库并决定最终状态。
+
+## 41.1 数据模型
+
+```python
+class EvidenceItem(BaseModel):
+    source: str   # 证据来源，如 prometheus / loki / cmdb / runbook
+    fact: str     # 证据事实描述
+
+class RCAResult(BaseModel):
+    root_cause: str                                      # 必填，根因结论
+    confidence: float = Field(ge=0.0, le=1.0)            # 必填，0~1
+    evidence: list[EvidenceItem] = Field(min_length=1)   # 必填，至少 1 条
+    hypotheses: list[str] = Field(default_factory=list)  # 可选
+    recommendations: list[str] = Field(default_factory=list)  # 可选
+    summary: str | None = None                           # 可选，展示用
+```
+
+`Incident` 新增两个字段，`root_cause` 保留作兼容：
+
+```python
+rca: RCAResult | None = None    # 唯一权威来源（authoritative）
+root_cause: str | None = None   # legacy：写入时从 rca.root_cause 派生
+failure_code: str | None = None # 最终未形成有效 RCA 时的顶层失败原因
+```
+
+原则：`rca` 是唯一真实数据源，`root_cause` 是派生兼容字段，两者永不存不同内容。
+
+## 41.2 failure_code 词表（本轮锁定六码）
+
+| code | 含义 | 对应状态 |
+|---|---|---|
+| `NO_SUBMISSION` | Agent 从未调用 submit_rca_result | INSUFFICIENT_EVIDENCE |
+| `MISSING_EVIDENCE` | RCA 缺少有效结论或必要证据（v1 同时涵盖结构性违例，暂不引入 INVALID_RCA） | INSUFFICIENT_EVIDENCE |
+| `LOW_CONFIDENCE` | confidence 缺失/非数字/越界，无法作为合法置信度 | INSUFFICIENT_EVIDENCE |
+| `LLM_ERROR` | LLM 调用异常 | ESCALATED |
+| `TOOL_ERROR` | Tool 执行出现真实系统异常（v1 保留，不主动触发） | ESCALATED |
+| `MAX_STEPS` | Agent 达到最大步数仍未完成 | ESCALATED |
+
+语义澄清：
+
+- `LOW_CONFIDENCE` 表示 confidence **无法作为合法可信度使用**，不是"系统认定置信度太低"。
+  V1 **不设业务阈值**——`confidence=0.2` 是合法模型判断，直接 ROOT_CAUSE_FOUND；
+  未来若需"低置信度不算定案"，再加 `rca.min_confidence` 配置。
+- `MISSING_EVIDENCE` 在 v1 覆盖所有非 confidence 类结构违例（root_cause 空 / evidence 空 /
+  item 缺 source/fact），不引入第七个码。
+
+## 41.3 SubmitRCATool（绑定本次 Run 的工具）
+
+不属于只读工具工厂 `build_tools()`；在 `investigate()` 内按 `(svc, incident_id)` 动态实例化，
+生命周期与一次调查严格一致。**工具不写 Incident**，只做校验 + 存 holder + 返回结果给 Agent。
+
+```python
+class SubmitRCATool:
+    submit_attempted: bool = False           # 是否调用过 submit_rca_result
+    rca_result: RCAResult | None = None      # 最近一次成功校验的 RCA（成功即锁存）
+    validation_error: str | None = None      # 最近一次校验失败的具体错误
+    last_validation_code: str | None = None  # 最近一次失败类别：LOW_CONFIDENCE / MISSING_EVIDENCE
+```
+
+校验规则（失败返回 ToolResult(success=False) 供 Agent 重试，不 raise）：
+
+| 情形 | 结果 |
+|---|---|
+| 结构合法 | rca_result 锁存，attempted=True，返回成功 |
+| confidence 缺失/非数字/越界 | last_validation_code=LOW_CONFIDENCE，返回失败 |
+| root_cause 空 / evidence 空 / item 缺字段 | last_validation_code=MISSING_EVIDENCE，返回失败 |
+
+关键规则：
+
+> **`rca_result` 只被成功提交更新；失败提交永不覆盖已有成功结果。**
+
+多次提交时，最后一次**成功**提交为准；成功后若再失败，只更新 validation_error / code，不清空已锁存的 rca_result。
+
+## 41.4 final_answer 的职责
+
+`final_answer` 只是**结束信号**，不是业务结果提交。是否有有效 RCA 由 holder 决定：
+
+```text
+submit_rca_result  → 业务结果提交
+final_answer       → Agent 生命周期结束信号
+```
+
+## 41.5 investigate() 流程（单一事务边界）
+
+```text
+investigate()
+ ├─ 状态机推进到 INVESTIGATING
+ ├─ 创建 SubmitRCATool(svc, incident_id)，加入本轮工具列表
+ ├─ adapt_tools → build_agent → agent.run(prompt, return_full_result=True)
+ ├─ 读取 holder / RunResult.state 统一判定
+ └─ 一次性写 Incident：rca / root_cause / status / failure_code
+```
+
+最终状态判定优先级（**rca_result 已锁存最优先**）：
+
+```text
+holder.rca_result 有效
+   → ROOT_CAUSE_FOUND / failure_code=None
+     （一旦成功提交即锁定；后续 final_answer / 工具错误不降级）
+
+否则 agent.run 抛异常
+   → ESCALATED / LLM_ERROR
+
+否则 RunResult.state == "max_steps_error"
+   → ESCALATED / MAX_STEPS
+
+否则未调用 submit（!submit_attempted）
+   → INSUFFICIENT_EVIDENCE / NO_SUBMISSION
+
+否则 last_validation_code == "LOW_CONFIDENCE"
+   → INSUFFICIENT_EVIDENCE / LOW_CONFIDENCE
+
+否则（MISSING_EVIDENCE 或兜底）
+   → INSUFFICIENT_EVIDENCE / MISSING_EVIDENCE
+```
+
+`ToolResult(success=False)` 是**正常工具返回**（Agent 看到"监控查询失败"可换证据继续调查），不触发 ESCALATED 分支。
+
+## 41.6 investigate() 返回值
+
+保持兼容：返回 `final_answer` 文本（给 API/前端展示），结构化结果一律从 `incident.rca` 读取。
+API 层 `{"conclusion": ..., "incident": ...}` 结构不变。
+
+## 41.7 锁定的设计决策清单
+
+1. LOW_CONFIDENCE：V1 只做 schema 校验，不设业务置信度阈值。
+2. 结构性违例统一归 MISSING_EVIDENCE，不新增 INVALID_RCA。
+3. SubmitRCATool 不写 Incident；investigate() 作为事务边界统一落 Incident。
+4. investigate() 返回 conclusion 文本；结构化从 incident.rca 读。
+5. rca_result 锁存：成功提交后不被后续失败覆盖；最后一次成功提交为准。
+6. final_answer 仅结束信号；无有效提交不得 ROOT_CAUSE_FOUND。
+7. TOOL_ERROR 作为状态机契约保留，V1 不主动制造（工具失败走 ToolResult(success=False)）。
+8. `Incident.evidence`（legacy list[str]，调查过程原始证据摘要）本轮保留不动；
+   `RCAResult.evidence`（结构化、支撑 RCA 结论的证据）职责不同。
+
+## 41.8 对应实现位置（规划）
+
+```text
+app/incident/model.py      EvidenceItem / RCAResult；Incident 增 rca / failure_code
+app/agent/submit_tool.py   SubmitRCATool（绑定 svc+incident_id，holder）
+app/agent/agent.py         investigate() 重构：注入 submit 工具、RunResult 解码、统一落 Incident
+prompts/diagnose.txt       提示 Agent 先 submit_rca_result 再 final_answer
+tests/...                  rca 模型 / submit 工具 / investigate 状态机 / E2E 场景
+```
