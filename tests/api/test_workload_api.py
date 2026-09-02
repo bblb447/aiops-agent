@@ -14,7 +14,7 @@ def _fake_get(url, params=None, timeout=None):
     elif "container_cpu" in q:
         v = 0.73
     elif "container_memory" in q:
-        v = 0.68
+        v = 6.8e9
     else:
         v = 0.0
     return httpx.Response(
@@ -34,7 +34,7 @@ def test_get_workload_endpoint(monkeypatch):
     assert body["qps"] == 125.4
     assert body["error_rate"] == 0.012
     assert body["cpu"] == 0.73
-    assert body["memory"] == 0.68
+    assert body["memory"] == 6.8e9
 
 
 def test_get_workload_unconfigured_returns_503():

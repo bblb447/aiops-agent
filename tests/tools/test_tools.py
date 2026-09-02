@@ -152,7 +152,7 @@ def test_query_workload_tool(monkeypatch):
     def fake_get(url, params=None, timeout=None):
         captured["q"] = (params or {}).get("query", "")
         v = 0.012 if "status=~" in captured["q"] else (125.4 if "http_requests_total" in captured["q"]
-                                                       else (0.73 if "container_cpu" in captured["q"] else 0.68))
+                                                       else (0.73 if "container_cpu" in captured["q"] else 6.8e9))
         return httpx.Response(200, request=httpx.Request("GET", str(url)),
                               json={"status": "success", "data": {"result": [{"metric": {}, "value": [0, str(v)]}]}})
     monkeypatch.setattr(httpx, "get", fake_get)

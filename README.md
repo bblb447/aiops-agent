@@ -55,7 +55,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 251 passed
+python -m pytest   # 255 passed
 ```
 
 ## 配置（.env）

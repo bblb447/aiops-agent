@@ -47,3 +47,41 @@ def test_get_workload_query_failure(monkeypatch):
     monkeypatch.setattr(httpx, "get", boom)
     with pytest.raises(WorkloadQueryError):
         WorkloadService("http://prom:9090").get_workload("order-service")
+
+
+def test_get_workload_prometheus_status_error(monkeypatch):
+    # HTTP 200 但 Prometheus 业务 status=error → 必须 WorkloadQueryError，不是静默 null。
+    def err(url, params=None, timeout=None):
+        return httpx.Response(
+            200, request=httpx.Request("GET", str(url)),
+            json={"status": "error", "errorType": "bad_data", "error": "bad expr"},
+        )
+    monkeypatch.setattr(httpx, "get", err)
+    with pytest.raises(WorkloadQueryError):
+        WorkloadService("http://prom:9090").get_workload("order-service")
+
+
+def test_get_workload_non_json_response(monkeypatch):
+    def txt(url, params=None, timeout=None):
+        return httpx.Response(200, request=httpx.Request("GET", str(url)), text="<html>not json")
+    monkeypatch.setattr(httpx, "get", txt)
+    with pytest.raises(WorkloadQueryError):
+        WorkloadService("http://prom:9090").get_workload("order-service")
+
+
+def test_get_workload_empty_result_is_null_not_error(monkeypatch):
+    # 单指标无匹配数据 → 字段 null，请求仍 200（非查询失败）。
+    def empty(url, params=None, timeout=None):
+        return httpx.Response(
+            200, request=httpx.Request("GET", str(url)),
+            json={"status": "success", "data": {"result": []}},
+        )
+    monkeypatch.setattr(httpx, "get", empty)
+    wl = WorkloadService("http://prom:9090").get_workload("ghost-service")
+    assert wl.qps is None and wl.error_rate is None
+    assert wl.cpu is None and wl.memory is None
+
+
+def test_escape_service_for_promql():
+    from app.workload.service import _escape_service
+    assert _escape_service('a"b\\c') == 'a\\"b\\\\c'

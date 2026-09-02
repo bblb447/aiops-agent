@@ -2048,13 +2048,18 @@ Budget + Convergence + Forced Stop 实验 2
   "qps": 125.4,
   "error_rate": 0.012,
   "cpu": 0.73,
-  "memory": 0.68
+  "memory": 6871947673
 }
 ```
 
-- PromQL（service 过滤）：qps=`sum(rate(http_requests_total[5m]))`；error_rate=错误速率/请求速率（`status=~"5..|4.."`）；
-  cpu=`sum(rate(container_cpu_usage_seconds_total[5m]))`；memory=`avg(container_memory_usage_bytes)`。
-- 语义说明：cpu/memory 字段以 Prometheus 返回值为准；接真实数据源时按 limit/quota 归一为 0~1。
+- **字段语义（V1.3 锁定 Prometheus 原始值，不提前归一）**：
+  `qps`=请求速率 req/s；`error_rate`=错误请求比例 0~1；`cpu`=CPU 使用核数；`memory`=内存使用量 bytes。
+  未来如需 0~1 利用率，另加 `cpu_utilization`/`memory_utilization`（usage/limit），不在本字段混用。
+- **单指标无数据语义**：某指标无匹配结果 → 该字段 `null`，请求仍 **HTTP 200**（查询链正常但无数据），
+  不算失败。
+- PromQL（service 过滤，service 值已做 PromQL 转义）：qps=`sum(rate(http_requests_total[5m]))`；
+  error_rate=错误速率/请求速率（`status=~"5..|4.."`）；cpu=`sum(rate(container_cpu_usage_seconds_total[5m]))`；
+  memory=`avg(container_memory_usage_bytes)`。
 - 失败模式保持项目约定：Prometheus 未配置 → API 503 / 工具 `ToolResult(success=False)`，不 raise；
-  查询失败 → API 502 / 工具失败返回。
+  HTTP/网络错误、响应非 JSON、Prometheus `status=error` → `WorkloadQueryError` → API 502 / 工具失败返回。
 - 文件：`app/workload/{model,service}.py`、`app/api/workload.py`、`MonitoringTool.query_workload`。
