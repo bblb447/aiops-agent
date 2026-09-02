@@ -1883,10 +1883,10 @@ API 层 `{"conclusion": ..., "incident": ...}` 结构不变。
 **V1.6 待做（不在本轮）**：
 - 调查收敛机制（Evidence/Investigation Budget、Convergence Criteria）——真实模型冒烟暴露
   "只要还有没查过的指标就继续查、直到 max_steps"的过度调查问题。
-- **已知一致性问题（已实测确认，暂不修）**：两条通道对 confidence 的校验不完全一致——工具路径手动拒绝
-  字符串/布尔（`"0.8"`、`True`），而 final 路径经 Pydantic v2 lax 模式会把 `"0.8"` coerce 成 0.8、
-  `True` coerce 成 1.0（比工具路径宽松）。不影响错误状态；收紧会让 final 路径拒掉模型偶发的字符串数字，
-  反而可能降低真实成功率。V1.6 若统一，倾向收紧 RCAResult（StrictFloat 或严格 validator），两通道共用。
+- **confidence 校验一致性（V1.6 P1，已修）**：两条通道对 confidence 的校验曾不一致——工具路径拒绝
+  字符串/布尔（`"0.8"`、`True`），final 路径经 Pydantic v2 lax 把 `"0.8"` coerce 成 0.8、`True` coerce 成 1.0。
+  已统一：RCAResult.confidence 加 `mode="before"` field_validator 只接受 int/float、拒绝字符串/布尔，
+  两通道同一 schema 语义；真实冒烟复验 PASS（模型实际输出数值型 confidence，无回归）。
 - **Tool Adapter 长期项**：`_wrap_plain_tool` 用 `dir()` 暴露所有公开 callable，存在把 `refresh_cache()` 等
   辅助方法暴露给 Agent 的隐患；V2 建议改显式白名单（如 `exposed_methods = [...]`）。MVP 只读场景暂不阻塞。
 
@@ -2029,5 +2029,6 @@ Budget + Convergence + Forced Stop 实验 2
      rca_source=tool，ROOT_CAUSE_FOUND
    结论：收敛 prompt 在多来源/日志场景泛化成立，预算内收敛且走工具通道。
    剩余：接入真实 Prometheus/Loki/CMDB/变更工具后再复验（当前为 fixture）。
-4. P1：Tool/Final confidence 严格校验统一（§41.7 已知项，软预算外的一致性收口）。
+4. P1：Tool/Final confidence 严格校验统一 —— **已做**（RCAResult confidence `mode="before"` validator，
+   见 §41.7；真实冒烟无回归）。
 5. P2：Tool Adapter 显式 `exposed_methods`（§41.7 已知项）。

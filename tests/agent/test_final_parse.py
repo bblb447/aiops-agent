@@ -58,6 +58,17 @@ def test_block_bad_confidence_is_low_confidence():
     assert code == "LOW_CONFIDENCE"
 
 
+def test_block_string_confidence_rejected_low_confidence():
+    # final 路径也必须拒绝字符串 confidence（P1：与工具路径同一 schema 语义）。
+    r, code = extract_rca_result(_block({
+        "root_cause": "x",
+        "confidence": "0.8",
+        "evidence": [{"source": "s", "fact": "f"}],
+    }))
+    assert r is None
+    assert code == "LOW_CONFIDENCE"
+
+
 def test_block_missing_end_tag_rejected():
     r, code = extract_rca_result("x<rca_result>" + json.dumps({
         "root_cause": "x", "confidence": 0.8,

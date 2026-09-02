@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class IncidentSeverity(str, Enum):
     CRITICAL = "critical"
@@ -37,6 +37,15 @@ class RCAResult(BaseModel):
     hypotheses: list[str] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
     summary: str | None = None
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _confidence_no_coercion(cls, v):
+        # 与 submit 工具路径一致：只接受数值，字符串/布尔拒绝（P1 两通道校验统一）。
+        # mode="before" 才能看到强转前的原始输入（否则 pydantic 已把 "0.8" 先转成 float）。
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError("confidence 必须是数字，不接受字符串/布尔")
+        return float(v)
 
 class Incident(BaseModel):
     incident_id: str

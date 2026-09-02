@@ -41,6 +41,17 @@ def test_rcarresult_rejects_confidence_out_of_range():
         RCAResult(root_cause="x", confidence=-0.1, evidence=[{"source": "s", "fact": "f"}])
 
 
+def test_rcarresult_rejects_string_confidence():
+    # 与 submit 工具路径一致：confidence 不接受字符串（P1 两通道校验统一）。
+    with pytest.raises(ValidationError):
+        RCAResult(root_cause="x", confidence="0.8", evidence=[{"source": "s", "fact": "f"}])
+
+
+def test_rcarresult_rejects_bool_confidence():
+    with pytest.raises(ValidationError):
+        RCAResult(root_cause="x", confidence=True, evidence=[{"source": "s", "fact": "f"}])
+
+
 def test_incident_has_rca_and_failure_code_defaults():
     inc = Incident(incident_id="INC-00001", title="CPU 高", service="order-service")
     assert inc.rca is None
