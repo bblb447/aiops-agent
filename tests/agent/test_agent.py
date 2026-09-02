@@ -389,6 +389,20 @@ def test_adapter_respects_exposed_methods():
     assert [a.name for a in adapters] == ["safe"]
 
 
+def test_empty_exposed_methods_does_not_fallback():
+    # exposed_methods=[]（显式"不暴露任何方法"）不得回退到 dir() 重新暴露公开方法。
+    from app.agent.agent import adapt_tools
+
+    class _Empty:
+        exposed_methods = []
+
+        def secret(self):
+            return "x"
+
+    adapters = adapt_tools([_Empty()])
+    assert adapters == []
+
+
 def test_monitoring_tool_does_not_expose_stray_methods():
     # 工具类后续加的公开辅助方法（refresh_cache 等）不得被 dir() 扫进 Agent。
     from app.agent.agent import adapt_tools

@@ -2,7 +2,7 @@
 
 基于 **smolagents** 的 **Evidence-driven AIOps Diagnostic Agent**：从告警触发到根因结论的只读闭环。Agent 动态调用监控、日志、CMDB、Runbook 工具收集证据，给出带证据、带置信度的根因分析。
 
-> **定位**：Agent-first 的故障诊断/RCA 引擎，不是告警管理平台（告警治理交给平台层，本项目可作其独立 RCA 子系统）。当前为只读诊断闭环，不执行生产写操作。V1.5 结构化 RCA 已实现（详见 [docs/design.md](docs/design.md) 第 41 章）。
+> **定位**：Agent-first 的故障诊断/RCA 引擎，不是告警管理平台（告警治理交给平台层，本项目可作其独立 RCA 子系统）。当前为只读诊断闭环，不执行生产写操作。V1.5 结构化 RCA / V1.6 调查收敛已实现（详见 [docs/design.md](docs/design.md) 第 41-42 章）。
 
 ## 功能
 
@@ -54,7 +54,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 234 passed
+python -m pytest   # 241 passed
 ```
 
 ## 配置（.env）
@@ -81,7 +81,7 @@ app/
 prompts/         Agent 诊断 prompt 模板
 runbooks/        Runbook 知识（RAG 数据源）
 tests/           pytest 全量测试
-docs/design.md   完整设计文档（41 章，V1.5 结构化 RCA）
+docs/design.md   完整设计文档（42 章，V1.5 结构化 RCA + V1.6 收敛）
 ```
 
 ## License
