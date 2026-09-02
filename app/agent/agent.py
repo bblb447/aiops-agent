@@ -147,15 +147,21 @@ def adapt_tools(tools: list) -> list:
 
 
 def _wrap_plain_tool(tool) -> list:
+    # 优先显式白名单 exposed_methods（避免 dir() 把 refresh_cache 等辅助方法暴露给 Agent）；
+    # 未声明的普通对象回退到旧 dir() 扫描（兼容外部/临时对象）。
+    names = getattr(tool, "exposed_methods", None)
+    if not names:
+        names = [name for name in dir(tool)
+                 if not name.startswith("_")
+                 and callable(getattr(tool, name))
+                 and getattr(getattr(tool, name), "__self__", None) is tool]
     methods = []
-    for name in dir(tool):
-        if name.startswith("_"):
-            continue
-        attr = getattr(tool, name)
+    for name in names:
+        attr = getattr(tool, name, None)
         if callable(attr) and getattr(attr, "__self__", None) is tool:
             methods.append(attr)
     if not methods:
-        # 没有公开方法时仍包一个，避免 build_agent 在空 tools 外再出问题
+        # 没有可暴露方法时仍包一个，避免 build_agent 在空 tools 外再出问题
         return [_ToolAdapter(tool, _noop)]
     return [_ToolAdapter(tool, m) for m in methods]
 

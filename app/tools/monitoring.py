@@ -4,6 +4,9 @@ from app.tools.base import ToolResult
 
 
 class MonitoringTool:
+    # 显式暴露白名单：只包装这些方法，避免 dir() 把 refresh_cache 等辅助方法暴露给 Agent。
+    exposed_methods = ["query_metric", "query_metric_range"]
+
     def __init__(self, settings: Settings) -> None:
         self._url = settings.prometheus_url
 

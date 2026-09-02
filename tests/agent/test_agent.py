@@ -372,6 +372,38 @@ def test_adapter_forward_dispatches_to_tool(monkeypatch):
     assert parsed["data"]["data"]["result"][0]["value"][1] == "94.5"
 
 
+def test_adapter_respects_exposed_methods():
+    # 显式白名单：只包装 exposed_methods，额外的公开方法不暴露给 Agent。
+    from app.agent.agent import adapt_tools
+
+    class _Tool:
+        exposed_methods = ["safe"]
+
+        def safe(self):
+            return "ok"
+
+        def unsafe_secret(self):
+            return "secret"
+
+    adapters = adapt_tools([_Tool()])
+    assert [a.name for a in adapters] == ["safe"]
+
+
+def test_monitoring_tool_does_not_expose_stray_methods():
+    # 工具类后续加的公开辅助方法（refresh_cache 等）不得被 dir() 扫进 Agent。
+    from app.agent.agent import adapt_tools
+    from app.tools.monitoring import MonitoringTool
+
+    class M(MonitoringTool):
+        def refresh_cache(self):
+            return "x"
+
+    adapters = adapt_tools([M(Settings(prometheus_url="http://x"))])
+    names = [a.name for a in adapters]
+    assert {"query_metric", "query_metric_range"} <= set(names)
+    assert "refresh_cache" not in names
+
+
 def test_build_agent_accepts_task4_tools():
     from smolagents import ToolCallingAgent
     from app.agent.agent import build_agent

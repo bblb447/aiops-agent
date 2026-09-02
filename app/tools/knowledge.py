@@ -14,6 +14,8 @@ CHROMA_DIR = Path(__file__).resolve().parent.parent.parent / ".data" / "chroma"
 
 
 class KnowledgeTool:
+    exposed_methods = ["search_runbook"]
+
     def __init__(self, settings: Settings) -> None:
         # 兼容 str/Path（测试可能 monkeypatch 成 str）。
         self._dir = Path(RUNBOOK_DIR)

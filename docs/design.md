@@ -1887,8 +1887,9 @@ API 层 `{"conclusion": ..., "incident": ...}` 结构不变。
   字符串/布尔（`"0.8"`、`True`），final 路径经 Pydantic v2 lax 把 `"0.8"` coerce 成 0.8、`True` coerce 成 1.0。
   已统一：RCAResult.confidence 加 `mode="before"` field_validator 只接受 int/float、拒绝字符串/布尔，
   两通道同一 schema 语义；真实冒烟复验 PASS（模型实际输出数值型 confidence，无回归）。
-- **Tool Adapter 长期项**：`_wrap_plain_tool` 用 `dir()` 暴露所有公开 callable，存在把 `refresh_cache()` 等
-  辅助方法暴露给 Agent 的隐患；V2 建议改显式白名单（如 `exposed_methods = [...]`）。MVP 只读场景暂不阻塞。
+- **Tool Adapter 暴露白名单（V1.6 P2，已修）**：各工具类声明 `exposed_methods = [...]`，
+  `_wrap_plain_tool` 优先按白名单包装（未声明的普通对象才回退 dir() 扫描兼容）。
+  工具类后续加的 `refresh_cache()` 等辅助方法不再自动暴露给 Agent；有回归测试守护。
 
 ## 41.8 对应实现位置（已实现，提交 06c3379 / 15b01d4 后续）
 
@@ -2031,4 +2032,4 @@ Budget + Convergence + Forced Stop 实验 2
    剩余：接入真实 Prometheus/Loki/CMDB/变更工具后再复验（当前为 fixture）。
 4. P1：Tool/Final confidence 严格校验统一 —— **已做**（RCAResult confidence `mode="before"` validator，
    见 §41.7；真实冒烟无回归）。
-5. P2：Tool Adapter 显式 `exposed_methods`（§41.7 已知项）。
+5. P2：Tool Adapter 显式 `exposed_methods` —— **已做**（各工具类白名单 + 适配器优先白名单，见 §41.7）。

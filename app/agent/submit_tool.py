@@ -15,6 +15,8 @@ from app.tools.base import ToolResult
 
 
 class SubmitRCATool:
+    exposed_methods = ["submit_rca_result"]
+
     def __init__(self, svc: IncidentService, incident_id: str) -> None:
         # 仅语义绑定（本工具属于哪个 Incident 的 Run）；本工具不写 Incident，
         # 持久化统一由 investigate() 在事务边界完成。

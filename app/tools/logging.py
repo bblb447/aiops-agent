@@ -6,6 +6,8 @@ from app.tools.base import ToolResult
 
 
 class LoggingTool:
+    exposed_methods = ["search_logs"]
+
     def __init__(self, settings: Settings) -> None:
         self._url = settings.loki_url
 

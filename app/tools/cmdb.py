@@ -6,6 +6,8 @@ from app.tools.base import ToolResult
 
 
 class CMDBTool:
+    exposed_methods = ["get_service"]
+
     def __init__(self, settings: Settings) -> None:
         self._url = settings.cmdb_url
 
