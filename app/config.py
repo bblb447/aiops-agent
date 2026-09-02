@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     rag_top_k: int = 3
 
     agent_max_steps: int = 10
+    agent_max_read_tools: int = 4
 
 @lru_cache
 def get_settings() -> Settings:

@@ -158,6 +158,29 @@ def test_investigate_uses_prompt_template(monkeypatch, tmp_path):
     assert cap.prompt == "模板: CPU 高 / order-service / critical / ['submit_rca_result']"
 
 
+def test_investigate_prompt_includes_read_budget(monkeypatch, tmp_path):
+    # 调查预算通过 {max_read_tools} 注入 prompt（V1.6 收敛）。
+    tpl = tmp_path / "prompt.txt"
+    tpl.write_text("模板: {title} / {max_read_tools}", encoding="utf-8")
+    monkeypatch.setattr("app.agent.agent.PROMPT_FILE", tpl)
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    cap = _FakeAgent()
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: cap)
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    assert cap.prompt == "模板: CPU 高 / 4"
+
+
+def test_diagnose_prompt_contains_convergence_instructions():
+    # 生产 prompt 已固化 V1.6 收敛机制（预算 + 判据 + 双通道收尾）。
+    from app.agent.agent import PROMPT_FILE
+    txt = PROMPT_FILE.read_text(encoding="utf-8")
+    assert "调查预算" in txt
+    assert "{max_read_tools}" in txt
+    assert "收敛判据" in txt
+    assert "<rca_result>" in txt
+
+
 def test_investigate_prompt_falls_back_when_template_missing(monkeypatch, tmp_path):
     monkeypatch.setattr("app.agent.agent.PROMPT_FILE", tmp_path / "nonexistent.txt")
     svc = IncidentService()

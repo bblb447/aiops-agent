@@ -14,3 +14,4 @@ def test_settings_loads_from_env(monkeypatch):
 def test_settings_defaults():
     s = get_settings()
     assert s.agent_max_steps == 10
+    assert s.agent_max_read_tools == 4
