@@ -67,6 +67,10 @@ class _CountingMonitoring(MonitoringTool):
         COUNTS["query_metric"] = COUNTS.get("query_metric", 0) + 1
         return super().query_metric(metric, target)
 
+    def query_workload(self, service: str):
+        COUNTS["query_workload"] = COUNTS.get("query_workload", 0) + 1
+        return super().query_workload(service)
+
     def query_metric_range(self, metric: str, target: str = "",
                            start: int | None = None, end: int | None = None,
                            step: str = "60s"):

@@ -2033,3 +2033,28 @@ Budget + Convergence + Forced Stop 实验 2
 4. P1：Tool/Final confidence 严格校验统一 —— **已做**（RCAResult confidence `mode="before"` validator，
    见 §41.7；真实冒烟无回归）。
 5. P2：Tool Adapter 显式 `exposed_methods` —— **已做**（各工具类白名单 + 适配器优先白名单，见 §41.7）。
+
+---
+
+# 43. Workload 服务负载展示（1.3，已实现）
+
+一条能力两头用：API `GET /api/v1/workload/{service}` 与 Agent 只读工具 `query_workload(service)`
+共用同一 `WorkloadService`（Prometheus 查询链），诊断时可查"负载多高"。
+
+```json
+{
+  "service": "order-service",
+  "timestamp": "...",
+  "qps": 125.4,
+  "error_rate": 0.012,
+  "cpu": 0.73,
+  "memory": 0.68
+}
+```
+
+- PromQL（service 过滤）：qps=`sum(rate(http_requests_total[5m]))`；error_rate=错误速率/请求速率（`status=~"5..|4.."`）；
+  cpu=`sum(rate(container_cpu_usage_seconds_total[5m]))`；memory=`avg(container_memory_usage_bytes)`。
+- 语义说明：cpu/memory 字段以 Prometheus 返回值为准；接真实数据源时按 limit/quota 归一为 0~1。
+- 失败模式保持项目约定：Prometheus 未配置 → API 503 / 工具 `ToolResult(success=False)`，不 raise；
+  查询失败 → API 502 / 工具失败返回。
+- 文件：`app/workload/{model,service}.py`、`app/api/workload.py`、`MonitoringTool.query_workload`。

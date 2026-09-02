@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from app.agent.agent import investigate
-from app.api import incidents
+from app.api import incidents, workload
 from app.config import Settings, get_settings
 from app.incident.service import IncidentService
 
@@ -23,6 +23,7 @@ def create_app(settings: Settings | None = None,
     _investigator = investigator
     app = FastAPI(title="AIOps Agent")
     app.include_router(incidents.router)
+    app.include_router(workload.router)
     return app
 
 

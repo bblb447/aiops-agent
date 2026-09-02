@@ -1,14 +1,22 @@
 import httpx
 from app.config import Settings
 from app.tools.base import ToolResult
+from app.workload.service import WorkloadService, WorkloadUnavailable, WorkloadQueryError
 
 
 class MonitoringTool:
     # 显式暴露白名单：只包装这些方法，避免 dir() 把 refresh_cache 等辅助方法暴露给 Agent。
-    exposed_methods = ["query_metric", "query_metric_range"]
+    exposed_methods = ["query_metric", "query_metric_range", "query_workload"]
 
     def __init__(self, settings: Settings) -> None:
         self._url = settings.prometheus_url
+
+    def query_workload(self, service: str) -> ToolResult:
+        try:
+            wl = WorkloadService(self._url).get_workload(service)
+        except (WorkloadUnavailable, WorkloadQueryError) as e:
+            return ToolResult(success=False, tool="query_workload", error=str(e))
+        return ToolResult(success=True, tool="query_workload", data=wl.model_dump())
 
     def _expr(self, metric: str, target: str) -> str:
         return f'{metric}{"{instance=~\"" + target + ".*\"}" if target else ""}'

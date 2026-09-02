@@ -13,6 +13,7 @@
 - **模型可插拔**：LLM Provider 抽象（`make_agent_model` 产出 Agent 模型），仅需配置 Endpoint / Key / Model，不绑定厂商。
 - **告警上下文入 Incident**：创建时携带 `source/alert_id/target/labels/annotations/observed_value/threshold/affected_assets`，注入诊断 prompt，RCA 有真实故障数据可用。
 - **时间序列查询**：`query_metric_range`（Prometheus range query）+ `search_logs` 可指定时间窗，支撑时间关联分析。
+- **服务负载展示（workload）**：`GET /api/v1/workload/{service}` + Agent 工具 `query_workload` 复用同一 `WorkloadService`，返回服务 QPS/错误率/CPU/内存汇总（Prometheus）。
 - **结构化 RCA（V1.5）**：`RCAResult`（`root_cause / confidence / evidence[] / hypotheses[]`）写入 `Incident.rca`，`rca_source` 记录来源。混合收尾：首选 `submit_rca_result` 工具，兜底为 `final_answer` 中 `<rca_result>` 标签的严格 JSON，两条通道共用同一 schema 校验（`rca_source` = tool / final_answer）。无有效 RCA 不得 `ROOT_CAUSE_FOUND`；失败归因 `failure_code`（六码：NO_SUBMISSION / MISSING_EVIDENCE / LOW_CONFIDENCE / LLM_ERROR / TOOL_ERROR / MAX_STEPS）。真实模型冒烟验证见 `scripts/smoke_real_llm.py`。
 
 ## 技术栈
@@ -54,7 +55,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 242 passed
+python -m pytest   # 251 passed
 ```
 
 ## 配置（.env）
@@ -75,13 +76,14 @@ app/
 ├── incident/    Incident 模型、状态机、服务（内存存储）
 ├── knowledge/   RAG：chunker 切块 / fastembed 嵌入 / chromadb 检索
 ├── llm/         LLM Provider 抽象（LiteLLM 实现）
+├── workload/    Workload 模型与 Prometheus 服务（API + 工具共用）
 ├── tools/       只读工具（监控/日志/CMDB/Runbook）
 ├── config.py    pydantic-settings 配置
 └── main.py      应用入口
 prompts/         Agent 诊断 prompt 模板
 runbooks/        Runbook 知识（RAG 数据源）
 tests/           pytest 全量测试
-docs/design.md   完整设计文档（42 章，V1.5 结构化 RCA + V1.6 收敛）
+docs/design.md   完整设计文档（43 章，V1.5 结构化 RCA / V1.6 收敛 / 1.3 Workload）
 ```
 
 ## License

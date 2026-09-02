@@ -142,6 +142,42 @@ def test_runbook_rag_failure_falls_back_to_keyword(tmp_path, monkeypatch):
     assert not tool._rag_enabled
 
 
+def test_query_workload_tool(monkeypatch):
+    # query_workload 复用 WorkloadService：成功返回结构化负载。
+    from app.workload.service import WorkloadService
+    s = Settings(prometheus_url="http://prom:9090")
+    tool = MonitoringTool(s)
+    captured = {}
+
+    def fake_get(url, params=None, timeout=None):
+        captured["q"] = (params or {}).get("query", "")
+        v = 0.012 if "status=~" in captured["q"] else (125.4 if "http_requests_total" in captured["q"]
+                                                       else (0.73 if "container_cpu" in captured["q"] else 0.68))
+        return httpx.Response(200, request=httpx.Request("GET", str(url)),
+                              json={"status": "success", "data": {"result": [{"metric": {}, "value": [0, str(v)]}]}})
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = tool.query_workload("order-service")
+    assert r.success is True
+    assert r.data["service"] == "order-service"
+    assert r.data["qps"] == 125.4
+    assert r.tool == "query_workload"
+
+
+def test_query_workload_unconfigured_returns_failure():
+    tool = MonitoringTool(Settings())
+    r = tool.query_workload("order-service")
+    assert not r.success
+    assert "未配置" in r.error
+    assert r.tool == "query_workload"
+
+
+def test_query_workload_exposed_via_adapter():
+    from app.agent.agent import adapt_tools
+    tool = MonitoringTool(Settings(prometheus_url="http://x"))
+    adapters = adapt_tools([tool])
+    assert "query_workload" in {a.name for a in adapters}
+
+
 def test_build_tools_returns_four_tools():
     tools = build_tools(Settings())
     names = {t.__class__.__name__ for t in tools}
