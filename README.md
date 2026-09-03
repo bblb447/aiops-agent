@@ -61,10 +61,16 @@ python -m pytest   # 260 passed
 L1 真实后端集成测试（需先运行 `tests/integration/scripts/setup_integration.ps1` 下载二进制）：
 
 ```bash
-python -m pytest -m integration tests/integration/   # 14 passed
+python -m pytest -m integration tests/integration/ --ignore=tests/integration/agent   # 14 passed
 ```
 
-详见 `tests/integration/README.md` 与 `docs/design.md` §44。
+L2 真实后端 + Scripted Agent（本地/手工；Agent 层 import smolagents，不进 L1 CI）：
+
+```bash
+python -m pytest -m integration tests/integration/agent/   # 3 passed
+```
+
+详见 `tests/integration/README.md` 与 `docs/design.md` §44（L1）/§45（L2）。
 
 ## 配置（.env）
 

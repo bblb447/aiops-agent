@@ -24,6 +24,14 @@ powershell -ExecutionPolicy Bypass -File tests/integration/scripts/integration_u
 powershell -ExecutionPolicy Bypass -File tests/integration/scripts/integration_down.ps1
 ```
 
+## L2 Scripted Agent + Real Backend（本地/手工）
+
+```powershell
+"D:\开发\smolagents\.venv\Scripts\python.exe" -m pytest -m integration tests/integration/agent/ -q
+```
+
+复用本目录 backend session（同一进程一次 up/down）。Agent 层 import smolagents（本项目 venv 已装），故 L2 **不进 L1 CI**；L1 全量命令需 `--ignore=tests/integration/agent`。设计见 docs/design.md §45。
+
 ## 跑 L0（默认，不收集 integration）
 
 ```powershell

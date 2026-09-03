@@ -41,8 +41,9 @@ jobs:
 
       - name: Run L1 integration tests
         shell: pwsh
+        # --ignore=tests/integration/agent：L2 Scripted Agent 层 import smolagents，本地/手工跑（spec §45.8），不进 L1 CI
         run: |
-          python -m pytest -m integration tests/integration/ -q 2>&1 | Tee-Object -FilePath l1-pytest.log
+          python -m pytest -m integration tests/integration/ --ignore=tests/integration/agent -q 2>&1 | Tee-Object -FilePath l1-pytest.log
 
       - name: Collect backend diagnostics
         if: always()
