@@ -27,6 +27,18 @@ class ScriptedDiagnosisModel(Model):
         )
 
 
+def _as_text(content) -> str:
+    """smolagents 消息 content 可能是 str 或 content-block list，统一展平成文本。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b.get("text", "") for b in content
+                       if isinstance(b, dict) and b.get("type") == "text")
+    if isinstance(content, dict):
+        return content.get("text", "") or ""
+    return str(content)
+
+
 def assistant_tool_calls(model) -> list[str]:
     """有序工具调用轨迹：每次 generate 的最新 ASSISTANT 消息 json.name。"""
     names = []
@@ -34,7 +46,7 @@ def assistant_tool_calls(model) -> list[str]:
         for m in reversed(msgs):
             if m.role == MessageRole.ASSISTANT:
                 try:
-                    names.append(json.loads(m.content)["name"])
+                    names.append(json.loads(_as_text(m.content))["name"])
                 except (TypeError, ValueError, KeyError):
                     pass
                 break
@@ -46,5 +58,5 @@ def tool_response_text(model, at: int) -> str:
     parts = []
     for m in model.calls[at]:
         if m.role == MessageRole.TOOL_RESPONSE:
-            parts.append(str(m.content))
+            parts.append(_as_text(m.content))
     return "\n".join(parts)
