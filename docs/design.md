@@ -1,6 +1,6 @@
 # 基于 smolagents 的 AIOps Agent 系统设计文档
 
-**文档版本：** V1.2（V1.5 结构化 RCA 已实现见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章）
+**文档版本：** V1.3（V1.5 结构化 RCA 已实现见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章；Workload 服务负载见第 43 章；L1 Real Backend Integration 测试层设计见第 44 章）
 **项目名称：** AIOps Agent
 **核心框架：** smolagents
 **文档类型：** 系统设计文档
@@ -2065,3 +2065,179 @@ Budget + Convergence + Forced Stop 实验 2
   区分"无数据"与"畸形数据"：`result` 空数组 = 无匹配 → 字段 `null` + HTTP 200；
   `result` 非空但 `value` 缺失/结构非法 = 上游畸形 → `WorkloadQueryError`。
 - 文件：`app/workload/{model,service}.py`、`app/api/workload.py`、`MonitoringTool.query_workload`。
+
+---
+
+# 44. L1 Real Backend Integration（设计定稿，实现中）
+
+## 44.1 目标与边界
+
+**目标**：把真实 Prometheus / Loki / CMDB 的端到端环境作为**独立集成测试层**，验证"真实后端的数据契约"与"Tool/Service 的解析契约"是否一致。
+
+```text
+真实 Prometheus / Loki / CMDB
+        ↓
+WorkloadService / MonitoringTool / LoggingTool / CMDBTool
+        ↓
+统一 ToolResult / Service Model
+```
+
+**决策依据（2026-09-03）**：单测/边界微调（畸形数据收口等）已接近收益天花板；当前缺口是跨系统的真实数据契约与集成验证。**不再继续扩 WorkloadService 边界。**
+
+**L1 ≠ Production E2E**。L1 验证的是：
+
+```text
+真实后端协议 + 真实 HTTP + 真实响应格式 + 真实解析
+```
+
+不覆盖（留给生产/更高层）：
+
+```text
+生产网络 / HA / 认证 / Kubernetes / 高并发 / 真实采集链路 / 真实 CMDB
+```
+
+## 44.2 L0–L3 测试分层
+
+| 层 | 内容 | 依赖 | 执行 |
+|----|------|------|------|
+| **L0** 单元测试 | fixture/mock 后端，monkeypatch httpx | 无 | `pytest`（默认，全量） |
+| **L1** 真实后端集成测试（本层） | Tool/Service 对真实后端 | 真实 Prometheus/Loki + Mock CMDB | `pytest -m integration tests/integration/`，可自动化 |
+| **L2** Agent 集成测试 | Scripted Model + 真实后端 | L1 环境 + 脚本化 Model | 可定期跑，无需真实 LLM |
+| **L3** Real LLM Smoke | 真实 DeepSeek + 真实后端 | L2 + API Key | 人工冒烟：模型升级/Prompt 修改/Agent 核心改动/Release 前 |
+
+排查路径因此清晰：失败可按层定位（后端数据问题 / Tool 解析问题 / Agent Tool Adapter / Agent Prompt）。
+
+## 44.3 Windows 宿主运行模型
+
+测试宿主与后端同宿主，无 Docker、无 WSL、无桥接：
+
+```text
+Windows Host
+├── pytest / aiops-agent
+│     ├── http://127.0.0.1:9090 → Prometheus
+│     ├── http://127.0.0.1:3100 → Loki
+│     └── http://127.0.0.1:8081 → Mock CMDB
+├── tests/integration/bin/prometheus/prometheus.exe
+├── tests/integration/bin/loki/loki-windows-amd64.exe
+```
+
+目录（二进制不提交 git，见 44.11）：
+
+```text
+tests/integration/
+├── README.md            # up → test → down
+├── config/              # prometheus.yml、loki-local-config.yaml
+├── fixtures/            # metrics_exporter.py、cmdb_data.json、seed_loki.py
+├── scripts/             # setup_integration.ps1 / integration_up.ps1 / integration_down.ps1
+├── servers/mock_cmdb.py
+├── conftest.py          # session 级生命周期
+├── test_prometheus.py
+├── test_loki.py
+├── test_cmdb.py
+└── test_tools.py
+```
+
+## 44.4 Prometheus
+
+- 官方 `windows-amd64` 预编译包，固定版本，解压到 `tests/integration/bin/prometheus/`。
+- `config/prometheus.yml` 最小配置：仅 scrape 本地 fixture exporter，`scrape_interval: 2s`。
+- 端口 `127.0.0.1:9090`。健康检查 `GET /-/ready`。
+
+## 44.5 Loki
+
+- 官方 Windows 二进制（`loki-windows-amd64.exe`），固定版本，解压到 `tests/integration/bin/loki/`。
+- `config/loki-local-config.yaml`：最小单租户本地配置，HTTP `127.0.0.1:3100`。
+- 健康检查 `GET /ready`。
+
+## 44.6 Mock CMDB
+
+- `servers/mock_cmdb.py`（FastAPI）：`GET /services/{service}` 读 `fixtures/cmdb_data.json`，命中 → 200；未命中 → 404。另提供 `GET /health`。
+- 端口 `127.0.0.1:8081`。
+- **CMDB 最小正式数据契约（种子，L0/L1 共用）**：
+
+```json
+{
+  "service": "order-service",
+  "status": "running",
+  "owner": "platform",
+  "dependencies": ["auth-service", "payment-service"]
+}
+```
+
+Mock 只保证：`200 + 正确结构`、`404 + not found`、`5xx/不可达`。未来接生产 CMDB 时替换 Provider，不改 `CMDBTool` 内部输出。schema 在 L0 补一条成功路径单测锁死（见 44.10）。
+
+## 44.7 Fixture / Seed
+
+- **metrics_exporter.py**：Python `/metrics` 文本端点，暴露与 Workload 契约**精确同名**的指标：
+  `http_requests_total{service=…,status=…}`（qps/error_rate 源）、`container_cpu_usage_seconds_total`、`container_memory_usage_bytes`。counter 持续递增，供 `rate()` 出值。提供 `order-service`（有量）与 `ghost-service`（无量）两个标签值。端口 `127.0.0.1:8000`。
+- **seed_loki.py**：向 Loki push API 推入带标签日志（`app="order-service"`），使 `search_logs` 能命中真实数据。
+
+## 44.8 启动、Ready、Warmup、Teardown
+
+**后端生命周期 = 整个 pytest session，独立于测试用例/模块**（避免每用例起停，摊销 warmup 成本）。
+
+`conftest.py` session fixture 顺序：
+
+```text
+检查 bin/ 是否存在
+  ├─ 无 → skip 全部 L1（提示先跑 setup_integration.ps1）
+  └─ 有 → 启动 4 个服务（Prometheus / Loki / metrics exporter / Mock CMDB）
+            ↓
+         健康检查（区分"进程存在"与"服务 ready"）
+           Prometheus → GET /-/ready
+           Loki       → GET /ready
+           Mock CMDB  → GET /health
+           exporter   → GET /metrics
+            ↓
+         Warmup：轮询 workload 所需指标已产生有效结果
+            ↓
+         跑 L1 用例
+            ↓
+         Teardown：按 pid 停进程并清理
+```
+
+**Warmup 语义（关键）**：`WorkloadService` 用 `rate(http_requests_total[5m])`，真实 Prometheus 需先积累样本。**不盲等固定秒数**，而是轮询"query_workload 对 order-service 的 qps 已返回非 null 有效值"直到成功；默认等待上限 10s，环境变量 `AIOPS_INTEGRATION_WARMUP_SECONDS` 可覆盖；超时 → fail（而非继续跑）。
+
+## 44.9 测试发现与执行方式
+
+新建 `pytest.ini`（项目根，当前无 pytest 配置）：
+
+```ini
+[pytest]
+testpaths = tests
+norecursedirs = integration
+markers =
+    integration: L1 Real Backend Integration（真实 Prometheus/Loki/Mock CMDB）
+```
+
+隔离实现（用户定稿）：**收集层排除** `tests/integration`（`norecursedirs`），`integration` marker 仅作语义标记；不采用全局 `addopts = -m "not integration"`（避免与显式 `-m integration` 叠加歧义）。
+
+```bash
+pytest                      # L0，默认不收集 integration
+pytest -m integration tests/integration/   # 显式跑 L1
+```
+
+现有 `tests/` 单测不受影响。
+
+## 44.10 用例矩阵（首批只到 Tools/Service，不进 Agent）
+
+| 工具 | 正常 | 无数据 | 错误语义 |
+|------|------|--------|----------|
+| `MonitoringTool.query_metric` / `query_metric_range` | exporter 指标可查、结构可解析 | 查询不存在 metric → 空 result | 非法查询 → 真实 Prometheus `status=error` → `success=False` |
+| `WorkloadService`（`query_workload`） | qps/error_rate/cpu/memory 非 null 且值合理 | `ghost-service` → 全 null，Tool 仍 success | 同上 `status=error` |
+| `LoggingTool.search_logs` | seed_loki 灌入后查询命中 | 查询不存在的标签值 → 空流 | Loki 不可达/挂 |
+| `CMDBTool.get_service` | mock 命中 → 200 解析种子契约字段 | mock 未命中 → **404** → `success=False` | 后端关 |
+
+**畸形语义边界**：`result 非空但畸形 → WorkloadQueryError` 等畸形响应真实 Prometheus 不会自然产生，**保留在 L0 单测**（已覆盖，见 §43），L1 不硬造。L1 验证真实协议下正常/空/错误三种真实可达路径。
+
+**L0 同步补测**：CMDB `get_service` 200 成功路径 schema 单测（当前缺失），锁定 §44.6 种子契约；畸形 result 已在 §43 修后覆盖。
+
+## 44.11 版本与 SHA256 管理
+
+- 二进制**不提交 git**（`tests/integration/.gitignore` 忽略 `bin/`），避免仓库膨胀。
+- `scripts/setup_integration.ps1`：固定 pinned 版本（Prometheus / Loki 各一，下载前以官方 release 页核实确切版本号与 SHA256），GitHub 下载 → SHA256 校验 → 解压到 `bin/`。境内走代理（复用 `HTTPS_PROXY=http://127.0.0.1:7897`）。
+- `integration_up.ps1` / `integration_down.ps1`：按 pid 文件启动/停止并清理。
+
+## 44.12 CI 边界
+
+L1 面向"真实协议 + 真实 HTTP + 可重复数据"，**不依赖某台机器上恰好跑着的后端**。是否入 GitHub Actions 留待后续；先保证本地 `setup → up → pytest -m integration → down` 一条命令闭环。L2/L3 沿 44.2 分层扩展。
