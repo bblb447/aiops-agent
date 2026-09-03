@@ -85,3 +85,25 @@ def test_get_workload_empty_result_is_null_not_error(monkeypatch):
 def test_escape_service_for_promql():
     from app.workload.service import _escape_service
     assert _escape_service('a"b\\c') == 'a\\"b\\\\c'
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        [{"metric": {"service": "s"}}],                   # 缺 value 键
+        [{"metric": {}, "value": ["1710000000"]}],        # value 缺数值列
+        [{"metric": {}, "value": ["1710000000", "abc"]}],  # 数值列非数值
+        [{"metric": {}, "value": "oops"}],                # value 非数组
+    ],
+)
+def test_get_workload_malformed_result_is_query_error(monkeypatch, result):
+    # result 非空但记录结构畸形（缺 value / value 非法）→ 数据源返回畸形数据，
+    # 须 WorkloadQueryError，与"无匹配数据→null+200"区分（不能吞成 null 或崩 500）。
+    def bad(url, params=None, timeout=None):
+        return httpx.Response(
+            200, request=httpx.Request("GET", str(url)),
+            json={"status": "success", "data": {"result": result}},
+        )
+    monkeypatch.setattr(httpx, "get", bad)
+    with pytest.raises(WorkloadQueryError):
+        WorkloadService("http://prom:9090").get_workload("order-service")

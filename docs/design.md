@@ -2061,5 +2061,7 @@ Budget + Convergence + Forced Stop 实验 2
   error_rate=错误速率/请求速率（`status=~"5..|4.."`）；cpu=`sum(rate(container_cpu_usage_seconds_total[5m]))`；
   memory=`avg(container_memory_usage_bytes)`。
 - 失败模式保持项目约定：Prometheus 未配置 → API 503 / 工具 `ToolResult(success=False)`，不 raise；
-  HTTP/网络错误、响应非 JSON、Prometheus `status=error` → `WorkloadQueryError` → API 502 / 工具失败返回。
+  HTTP/网络错误、响应非 JSON、Prometheus `status=error`、result 非空但记录畸形 → `WorkloadQueryError` → API 502 / 工具失败返回。
+  区分"无数据"与"畸形数据"：`result` 空数组 = 无匹配 → 字段 `null` + HTTP 200；
+  `result` 非空但 `value` 缺失/结构非法 = 上游畸形 → `WorkloadQueryError`。
 - 文件：`app/workload/{model,service}.py`、`app/api/workload.py`、`MonitoringTool.query_workload`。

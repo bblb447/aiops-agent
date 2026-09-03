@@ -1,8 +1,8 @@
 """WorkloadService：从 Prometheus 汇总服务负载（1.3，与 API/Agent 工具共用一条查询链）。
 
 语义（V1.3 锁定 Prometheus 原始值）：qps=req/s；error_rate=错误比例 0~1；
-cpu=核数；memory=bytes。某指标无匹配数据 → 该字段 null（请求仍 200）；
-HTTP/网络错误、响应非 JSON、Prometheus status=error → WorkloadQueryError。
+cpu=核数；memory=bytes。某指标无匹配数据（result 空）→ 该字段 null（请求仍 200）；
+HTTP/网络错误、响应非 JSON、Prometheus status=error、result 非空但记录畸形 → WorkloadQueryError。
 """
 import httpx
 
@@ -64,8 +64,10 @@ class WorkloadService:
             return None
         try:
             return float(result[0]["value"][1])
-        except (KeyError, TypeError, ValueError):
-            return None
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise WorkloadQueryError(
+                f"Prometheus result 畸形: {type(e).__name__}: {e}"
+            ) from e
 
     def get_workload(self, service: str) -> Workload:
         if not self._url:
