@@ -2344,14 +2344,14 @@ got = svc.get(inc.incident_id)
 
 **场景 B（test_multi_source）**——plan：`query_workload` → `search_logs('{app="order-service"}')` → `submit_rca_result(...两条证据...)` → `final_answer`。
 - 工具调用层：三工具按序。
-- 消费层：存在含 `"qps"`（Prometheus）与含 `"order-service"`（Loki 日志流标签）的 TOOL_RESPONSE。
+- 消费层：存在含 `"qps"`（query_workload 的 Prometheus 聚合）与含 `"upstream timeout"`（seed 日志内容，仅 Loki 响应 value 行含）的 TOOL_RESPONSE。
 - **证据集合断言**：`len(evidence) >= 2` 且 `{e.source for e in evidence} == {"prometheus", "loki"}`（不允许同源两条冒充双源；evidence > 2 条允许，只要 source 集合仍为这两源）。
 - `rca_source == "tool"`。
 
 **Fallback（test_fallback）**——plan：`query_metric("http_requests_total")` → `final_answer(answer=<含 rca_result JSON 的文本>)`。
 - `submit_rca_result` 在 `model.calls` 的**全部工具调用轨迹中均未出现**（检查整段轨迹，非仅最后一次模型调用；submit 未被调用是 fallback 前提）。
 - 最终 `rca_source == "final_answer"`（不是 tool）。
-- 消费层：存在 TOOL_RESPONSE 含 `"http_requests_total"`（真实 Prom 系列名），证明真实后端被读。
+- 消费层：存在 TOOL_RESPONSE 含 `"order-service"`（真实 Prom `/api/v1/query` 响应 JSON 含该 series 的 `service` 标签；该场景唯一工具调用、无歧义），证明真实后端被读。注意：Prometheus 查询响应**不包含指标名本身**，故特征字取系列标签。
 - RCA 校验走既有 `extract_rca_result`/`RCAResult` 通道。
 
 ## 45.6 验收矩阵
@@ -2359,8 +2359,8 @@ got = svc.get(inc.incident_id)
 | 场景 | 真实后端 | Agent | RCA 通道 | `rca_source` | 关键断言 |
 |------|----------|-------|----------|--------------|----------|
 | A 单源 | Prometheus | Scripted | Tool 提交 | `tool` | query_workload→submit 顺序；消费层含 `qps`；ROOT_CAUSE_FOUND |
-| B 双源 | Prometheus + Loki | Scripted | Tool 提交 | `tool` | 三工具按序；消费层含 `qps` 与 `order-service`；evidence source set == {prometheus, loki} |
-| Fallback | Prometheus | Scripted | Final JSON | `final_answer` | submit 未调用；消费层含 `http_requests_total`；extract 通道合法 |
+| B 双源 | Prometheus + Loki | Scripted | Tool 提交 | `tool` | 三工具按序；消费层含 `qps`（Prom）与 `upstream timeout`（Loki seed 值）；evidence source set == {prometheus, loki} |
+| Fallback | Prometheus | Scripted | Final JSON | `final_answer` | submit 未调用；消费层含 `order-service`（该场景唯一 prom series 标签）；extract 通道合法 |
 
 共同：`ROOT_CAUSE_FOUND`、`failure_code=None`、`rca` 合法、confidence 0~1、evidence 非空且结构合法。
 
@@ -2368,7 +2368,7 @@ got = svc.get(inc.incident_id)
 
 - 数据前提：真实后端 `order-service` 有量（L1 exporter counter 每 ~2s 递增 → workload 四字段非空；Loki 已 seed `{app="order-service"}`；`http_requests_total` 真实可查）。
 - 红线：**不改 `app/` 产品代码**；不新增 Tool/数据源；不改 RCA 协议/收尾；不改 L1 生命周期；不做自愈/多 Agent。测试只替换 LLM 产出（`monkeypatch LiteLLMProvider.make_agent_model`）；**不得 monkeypatch `build_tools`/`WorkloadService`/`httpx`/backend URL**——否则 L2 退化为 L0/L1 组合测试。
-- 断言依赖的工具响应特征字（`qps`/`order-service`/`http_requests_total`）来自真实后端序列化，若产品序列化格式演进导致断言碎，属于应修正测试而非放宽语义。
+- 断言依赖的工具响应特征字来自真实后端序列化：`query_workload`→`"qps"`；Loki seed 日志值→`"upstream timeout"`；Fallback 场景 query_metric 响应→系列标签 `"order-service"`（Prom 响应不含指标名本身）。若产品序列化格式演进导致断言碎，属于应修正测试而非放宽语义。
 
 ## 45.8 CI 与后续
 
