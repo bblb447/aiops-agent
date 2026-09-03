@@ -2170,7 +2170,7 @@ Mock 只保证：`200 + 正确结构`、`404 + not found`、`5xx/不可达`。�
 
 - **metrics_exporter.py**：Python `/metrics` 文本端点，暴露与 Workload 契约**精确同名**的指标：
   `http_requests_total{service=…,status=…}`（qps/error_rate 源）、`container_cpu_usage_seconds_total`、`container_memory_usage_bytes`。counter 持续递增，供 `rate()` 出值。提供 `order-service`（有量）与 `ghost-service`（无量）两个标签值。端口 `127.0.0.1:8000`。
-- **seed_loki.py**：向 Loki push API 推入带标签日志（`app="order-service"`），使 `search_logs` 能命中真实数据。
+- **seed_loki.py**：向 Loki push API 推入带标签日志（`app="order-service"`，含可检索关键字），使 `search_logs` 能命中真实数据；Loki push→可查询有延迟，seed 后须轮询可达（见 44.8 Loki Seed Readiness）。
 
 ## 44.8 启动、Ready、Warmup、Teardown
 
@@ -2189,14 +2189,22 @@ Mock 只保证：`200 + 正确结构`、`404 + not found`、`5xx/不可达`。�
            Mock CMDB  → GET /health
            exporter   → GET /metrics
             ↓
-         Warmup：轮询 workload 所需指标已产生有效结果
+         Workload Warmup：轮询 query_workload(order-service)，
+         qps/error_rate/cpu/memory 四指标全部非 null 才算 ready
+            ↓
+         Seed Loki：执行 seed_loki.py
+            ↓
+         Loki Seed Readiness：轮询查询直到至少命中 1 条 seed 日志
             ↓
          跑 L1 用例
             ↓
          Teardown：按 pid 停进程并清理
 ```
 
-**Warmup 语义（关键）**：`WorkloadService` 用 `rate(http_requests_total[5m])`，真实 Prometheus 需先积累样本。**不盲等固定秒数**，而是轮询"query_workload 对 order-service 的 qps 已返回非 null 有效值"直到成功；默认等待上限 10s，环境变量 `AIOPS_INTEGRATION_WARMUP_SECONDS` 可覆盖；超时 → fail（而非继续跑）。
+**Warmup / Seed Readiness 语义（关键）**：真实后端有数据积累与摄取延迟，**不盲等固定秒数**，改为轮询直到数据可用：
+- **Workload Warmup ready** = 轮询 `query_workload(order-service)` 的 `qps`/`error_rate`/`cpu`/`memory` **四指标全部非 null**（与 44.10 正常用例的断言条件一致）；
+- **Loki Seed Readiness** = seed_loki.py push 后轮询查询该 label 流**至少命中 1 条** seed 日志；
+- 两者默认等待上限 10s，环境变量 `AIOPS_INTEGRATION_WARMUP_SECONDS` 可覆盖；超时 → fail（而非继续跑）。
 
 ## 44.9 测试发现与执行方式
 
@@ -2205,7 +2213,18 @@ Mock 只保证：`200 + 正确结构`、`404 + not found`、`5xx/不可达`。�
 ```ini
 [pytest]
 testpaths = tests
-norecursedirs = integration
+# norecursedirs 显式设置会替换 pytest 默认排除集（而非追加），须把默认项一并列出
+norecursedirs =
+    integration
+    .*
+    *.egg
+    _darcs
+    build
+    CVS
+    dist
+    node_modules
+    venv
+    {arch}
 markers =
     integration: L1 Real Backend Integration（真实 Prometheus/Loki/Mock CMDB）
 ```
@@ -2228,6 +2247,10 @@ pytest -m integration tests/integration/   # 显式跑 L1
 | `LoggingTool.search_logs` | seed_loki 灌入后查询命中 | 查询不存在的标签值 → 空流 | Loki 不可达/挂 |
 | `CMDBTool.get_service` | mock 命中 → 200 解析种子契约字段 | mock 未命中 → **404** → `success=False` | 后端关 |
 
+**错误路径隔离（实现规则）**：L1 错误语义测试**不停止 session 级共享后端**，避免污染后续用例。错误路径构造**独立 Tool/Service 实例**，endpoint 指向**未占用的 localhost 端口**（如 `127.0.0.1:31999` → connection refused），仍走真实 httpx/TCP，产出 `success=False`；Prometheus `status=error` 用真实 Prometheus 的非法查询触发（后端仍在），不需要停服务。
+
+**正常值断言宽范围**（不锁 exporter 精确实现）：`qps > 0`、`0 ≤ error_rate ≤ 1`、`cpu > 0`、`memory > 0`。
+
 **畸形语义边界**：`result 非空但畸形 → WorkloadQueryError` 等畸形响应真实 Prometheus 不会自然产生，**保留在 L0 单测**（已覆盖，见 §43），L1 不硬造。L1 验证真实协议下正常/空/错误三种真实可达路径。
 
 **L0 同步补测**：CMDB `get_service` 200 成功路径 schema 单测（当前缺失），锁定 §44.6 种子契约；畸形 result 已在 §43 修后覆盖。
@@ -2235,7 +2258,7 @@ pytest -m integration tests/integration/   # 显式跑 L1
 ## 44.11 版本与 SHA256 管理
 
 - 二进制**不提交 git**（`tests/integration/.gitignore` 忽略 `bin/`），避免仓库膨胀。
-- `scripts/setup_integration.ps1`：固定 pinned 版本（Prometheus / Loki 各一，下载前以官方 release 页核实确切版本号与 SHA256），GitHub 下载 → SHA256 校验 → 解压到 `bin/`。境内走代理（复用 `HTTPS_PROXY=http://127.0.0.1:7897`）。
+- `scripts/setup_integration.ps1`：固定 pinned 版本（Prometheus / Loki 各一，下载前以官方 release 页核实确切版本号与 SHA256），GitHub 下载 → SHA256 校验 → 解压到 `bin/`。下载复用系统 `HTTPS_PROXY`/`HTTP_PROXY`（未设置则直连），**不写死个人代理地址**——境内环境如需代理，README 说明自行设置环境变量。
 - `integration_up.ps1` / `integration_down.ps1`：按 pid 文件启动/停止并清理。
 
 ## 44.12 CI 边界
