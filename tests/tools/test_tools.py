@@ -128,6 +128,26 @@ def test_runbook_rag_returns_hits(tmp_path, monkeypatch):
     assert fake.indexed_chunks and fake.indexed_chunks[0]["source"] == "restart.md"
 
 
+CONTRACT_SERVICE = {
+    "service": "order-service",
+    "status": "running",
+    "owner": "platform",
+    "dependencies": ["auth-service", "payment-service"],
+}
+
+
+def test_get_service_success_returns_contract(monkeypatch):
+    # spec §44.6 CMDB 最小正式数据契约：200 命中时 data 原样携带契约字段。
+    def fake(url, timeout=None):
+        return httpx.Response(200, request=httpx.Request("GET", str(url)),
+                              json=CONTRACT_SERVICE)
+    monkeypatch.setattr(httpx, "get", fake)
+    tool = CMDBTool(Settings(cmdb_url="http://127.0.0.1:8081"))
+    r = tool.get_service("order-service")
+    assert r.success
+    assert r.data == CONTRACT_SERVICE
+
+
 def test_runbook_rag_failure_falls_back_to_keyword(tmp_path, monkeypatch):
     (tmp_path / "restart.md").write_text("当服务 CrashLoopBackOff 时，先检查最近发布再重启。", encoding="utf-8")
     monkeypatch.setattr("app.tools.knowledge.RUNBOOK_DIR", str(tmp_path))
