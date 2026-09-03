@@ -2261,6 +2261,13 @@ pytest -m integration tests/integration/   # 显式跑 L1
 - `scripts/setup_integration.ps1`：固定 pinned 版本（Prometheus / Loki 各一，下载前以官方 release 页核实确切版本号与 SHA256），GitHub 下载 → SHA256 校验 → 解压到 `bin/`。下载复用系统 `HTTPS_PROXY`/`HTTP_PROXY`（未设置则直连），**不写死个人代理地址**——境内环境如需代理，README 说明自行设置环境变量。
 - `integration_up.ps1` / `integration_down.ps1`：按 pid 文件启动/停止并清理。
 
-## 44.12 CI 边界
+## 44.12 CI 边界（2026-09-03 定稿）
 
-L1 面向"真实协议 + 真实 HTTP + 可重复数据"，**不依赖某台机器上恰好跑着的后端**。是否入 GitHub Actions 留待后续；先保证本地 `setup → up → pytest -m integration → down` 一条命令闭环。L2/L3 沿 44.2 分层扩展。
+**CI 分层决策**：**L0 = 默认回归 gate（PR/push 必跑）**；**L1 不纳入默认 CI**，作手工/定时 gate（`workflow_dispatch` 或 scheduled nightly，或 release 前人工触发）；L2/L3 一律手工。
+
+理由：L1 运行形态天然带来 Windows Runner + 双二进制下载/SHA256 + 进程管理 + 端口 + warmup + seed，塞进每次 PR 会放大反馈周期与失败面。分层让问题定位清晰——L1 PASS / L2 FAIL ⇒ 后端与 Tool 契约无问题、问题在 Agent 层；L2 PASS / L3 FAIL ⇒ 真实模型行为差异。
+
+边界说明：
+- L1 面向"真实协议 + 真实 HTTP + 可重复数据"，**不依赖某台机器上恰好跑着的后端**；本地 `setup → up → pytest -m integration → down` 一条命令闭环。
+- L1 只到 Tools/Service，**不引入 Agent**（L2/L3 保留）；畸形语义不在此造（留 L0）。
+- 本阶段冻结于 master `4497543`，不再给 L1 追加测试。
