@@ -1,0 +1,66 @@
+# L1 Real Backend Integration Test — manual gate (spec docs/design.md §44.12).
+# L1 is intentionally NOT on push/PR (that is the fast L0 default gate).
+# It uses pinned binaries (never "latest"), Windows runner, and only calls the
+# existing setup/conftest tooling — it does not reimplement backend lifecycle.
+name: L1 Real Backend Integration (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      prometheus_version:
+        description: Prometheus pinned version
+        required: false
+        default: "3.14.0"
+      loki_version:
+        description: Loki pinned version
+        required: false
+        default: "3.7.7"
+
+jobs:
+  l1:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install minimal L1 dependencies
+        run: python -m pip install pytest fastapi uvicorn pydantic pydantic-settings httpx
+
+      - name: Download and verify pinned binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File tests/integration/scripts/setup_integration.ps1 `
+            -PromVersion "${{ github.event.inputs.prometheus_version }}" `
+            -LokiVersion "${{ github.event.inputs.loki_version }}"
+
+      - name: Run L1 integration tests
+        shell: pwsh
+        run: |
+          python -m pytest -m integration tests/integration/ -q 2>&1 | Tee-Object -FilePath l1-pytest.log
+
+      - name: Collect backend diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          Copy-Item -Path tests/integration/.runtime/*.log -Destination . -ErrorAction SilentlyContinue
+          python tests/integration/backend.py status | Out-File -FilePath backend-status.txt -Encoding utf8
+
+      - name: Upload L1 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: l1-artifacts
+          path: |
+            l1-pytest.log
+            prometheus.log
+            loki.log
+            exporter.log
+            cmdb.log
+            backend-status.txt
+          if-no-files-found: warn
