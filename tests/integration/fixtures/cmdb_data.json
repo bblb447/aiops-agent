@@ -1,0 +1,8 @@
+{
+  "order-service": {
+    "service": "order-service",
+    "status": "running",
+    "owner": "platform",
+    "dependencies": ["auth-service", "payment-service"]
+  }
+}
