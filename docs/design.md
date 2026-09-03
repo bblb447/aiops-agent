@@ -2334,20 +2334,22 @@ got = svc.get(inc.incident_id)
 ```
 通用断言：`status == ROOT_CAUSE_FOUND`、`failure_code is None`、`rca is not None`、`0 <= rca.confidence <= 1`、每条 evidence 含非空 `source`/`fact`。
 
+**评价范围**：L2 的 `root_cause`/`evidence.fact` 采用测试计划预置值，**不评价 RCA 因果推理质量**——L2 只评价四件事：真实后端响应是否进入 Agent 上下文、工具调用顺序、RCA 提交/兜底路径、最终状态。真实模型 RCA 质量评价留 L3。
+
 **场景 A（test_single_source）**——plan：`query_workload("order-service")` → `submit_rca_result(...)` → `final_answer`。
 - 工具调用层：`model.calls` 中 `query_workload` 先于 `submit_rca_result` 出现（顺序）。
-- 真实响应被消费层：存在 TOOL_RESPONSE 消息，其 content 含 `"qps"`（真实 workload data 经 `ToolResult.to_dict`→JSON 后必含该键）——证明 Agent 读到真实 Prometheus 聚合而非自编。
+- 真实响应被消费层：存在**与 `query_workload` 调用对应**（该工具调用之后产生的）TOOL_RESPONSE，其序列化 content 含 `"qps"`（真实 workload data 经 `ToolResult.to_dict`→JSON 后必含该键）——证明 Agent 读到的是 query_workload 返回的真实 Prometheus 聚合而非自编/其他文本。
 - `rca_source == "tool"`；证据 `source == "prometheus"`。
 - 拒绝自编：若 A 只断言最终状态而不查消费层，自编 RCA 也能通过——故消费层断言为强制。
 
 **场景 B（test_multi_source）**——plan：`query_workload` → `search_logs('{app="order-service"}')` → `submit_rca_result(...两条证据...)` → `final_answer`。
 - 工具调用层：三工具按序。
 - 消费层：存在含 `"qps"`（Prometheus）与含 `"order-service"`（Loki 日志流标签）的 TOOL_RESPONSE。
-- **证据 source 集合断言 `== {"prometheus", "loki"}`**（不允许同源两条冒充双源）。
+- **证据集合断言**：`len(evidence) >= 2` 且 `{e.source for e in evidence} == {"prometheus", "loki"}`（不允许同源两条冒充双源；evidence > 2 条允许，只要 source 集合仍为这两源）。
 - `rca_source == "tool"`。
 
 **Fallback（test_fallback）**——plan：`query_metric("http_requests_total")` → `final_answer(answer=<含 rca_result JSON 的文本>)`。
-- `submit_rca_result` 在整个调用序列中**未出现**（submit 未被调用是 fallback 前提）。
+- `submit_rca_result` 在 `model.calls` 的**全部工具调用轨迹中均未出现**（检查整段轨迹，非仅最后一次模型调用；submit 未被调用是 fallback 前提）。
 - 最终 `rca_source == "final_answer"`（不是 tool）。
 - 消费层：存在 TOOL_RESPONSE 含 `"http_requests_total"`（真实 Prom 系列名），证明真实后端被读。
 - RCA 校验走既有 `extract_rca_result`/`RCAResult` 通道。
@@ -2365,7 +2367,7 @@ got = svc.get(inc.incident_id)
 ## 45.7 数据前提与红线
 
 - 数据前提：真实后端 `order-service` 有量（L1 exporter counter 每 ~2s 递增 → workload 四字段非空；Loki 已 seed `{app="order-service"}`；`http_requests_total` 真实可查）。
-- 红线：**不改 `app/` 产品代码**；不新增 Tool/数据源；不改 RCA 协议/收尾；不改 L1 生命周期；不做自愈/多 Agent。
+- 红线：**不改 `app/` 产品代码**；不新增 Tool/数据源；不改 RCA 协议/收尾；不改 L1 生命周期；不做自愈/多 Agent。测试只替换 LLM 产出（`monkeypatch LiteLLMProvider.make_agent_model`）；**不得 monkeypatch `build_tools`/`WorkloadService`/`httpx`/backend URL**——否则 L2 退化为 L0/L1 组合测试。
 - 断言依赖的工具响应特征字（`qps`/`order-service`/`http_requests_total`）来自真实后端序列化，若产品序列化格式演进导致断言碎，属于应修正测试而非放宽语义。
 
 ## 45.8 CI 与后续
