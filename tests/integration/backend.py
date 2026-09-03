@@ -12,6 +12,10 @@ from pathlib import Path
 
 import httpx
 
+# 本机可能开着系统代理（Windows 注册表），httpx trust_env 会劫持到 127.0.0.1 的后端请求
+# （表现为 HTTP 502）。本地后端一律直连，绕过代理。
+os.environ["NO_PROXY"] = ",".join(filter(None, [os.environ.get("NO_PROXY", ""), "127.0.0.1", "localhost"]))
+
 ROOT = Path(__file__).resolve().parent
 BIN_DIR = ROOT / "bin"
 RUNTIME_DIR = ROOT / ".runtime"
