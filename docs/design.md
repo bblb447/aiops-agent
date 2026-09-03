@@ -1,6 +1,6 @@
 # 基于 smolagents 的 AIOps Agent 系统设计文档
 
-**文档版本：** V1.4（V1.5 结构化 RCA 已实现见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章；Workload 服务负载见第 43 章；L1 Real Backend Integration 测试层设计见第 44 章；L2 Scripted Agent + Real Backend 测试层设计见第 45 章）
+**文档版本：** V1.5（V1.5 结构化 RCA 已实现见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章；Workload 服务负载见第 43 章；L1 Real Backend Integration 见第 44 章；L2 Scripted Agent + Real Backend 见第 45 章；L3 Real LLM + Real Backend 见第 46 章）
 **项目名称：** AIOps Agent
 **核心框架：** smolagents
 **文档类型：** 系统设计文档
@@ -2373,3 +2373,87 @@ got = svc.get(inc.incident_id)
 ## 45.8 CI 与后续
 
 L2 定位**本地 / 手工**（暂不入 GitHub Actions——比 L1 多一层 Agent 执行，失败诊断价值先于 CI 自动化）。CMDB 第三源（真实 Mock CMDB `get_service` 作证据源）与更多场景留后续评估，不塞进首版。L2 稳定后接 L3（换真实 DeepSeek，变量唯一）。
+
+---
+
+# 46. L3 Real LLM + Real Backend（设计定稿，实现中）
+
+## 46.1 目标与边界
+
+L3 = 真实 DeepSeek + 真实 Prometheus/Loki + 同一 Agent/工具/Prompt/预算，**观测真实模型行为是否符合设计预期**。与 L0/L1/L2 的唯一差别是模型：
+
+```text
+L2 Scripted Model（确定性）
+    ↓ 仅替换
+L3 Real DeepSeek（非确定性）
+```
+
+**L3 不是 CI**：不进 pytest、不进默认 GitHub Actions、不因一次模型/API 波动阻塞代码合并。定位为 Release / Prompt / Model 变更时的人工验证（换模型、改 diagnose prompt、改 convergence budget、改 Tool 描述、改 Agent 核心流程、release candidate）。
+
+现状（2026-09-03 探明）：既有真实 LLM 脚本 `scripts/smoke_real_llm.py`、`scripts/experiment_convergence.py` 数据源全部是 **fixture（monkeypatch httpx）**；真实 DeepSeek + 真实后端的 L3 是**真空缺**。本层补齐，模板复用 experiment_convergence（只读工具插桩计数 + 预算验收）。
+
+## 46.2 运行形态（观测脚本）
+
+`scripts/l3_real_backend.py`。真实后端由既有 `backend.py` 管理，脚本**不隐式管理 backend 生命周期**：
+
+```powershell
+python tests/integration/backend.py up
+python scripts/l3_real_backend.py
+python tests/integration/backend.py down
+```
+
+脚本负责：读 `.env`（缺 key exit 2）→ 用真实 Settings 指向真实 URL（prom/loki/cmdb）→ 创建真实 LLM Provider（`tool_choice=auto`，deepseek-v4-flash）→ 对每场景执行 `investigate` → 记录完整观测 → 输出报告。真实模型非确定：**默认只观测不失败**；`--expect` 提供可选门禁（见 46.6）。
+
+## 46.3 场景矩阵（首版用当前真实稳态，不改 exporter）
+
+| 场景 | 名称（诚实命名） | 真实状态 | 目的 |
+|------|------------------|----------|------|
+| A | `cpu_alert_negative_control` | CPU 指标正常（无 CPU 异常证据） | **负向控制**：模型是否被"CPU 高"告警诱导硬找根因？是否证据优先、预算内收敛 |
+| B | `error_spike_multisource` | Prometheus error_rate 有信号（order-service ~20% 500）+ Loki 有 500 日志（seed） | **正向多源**：真实 Prometheus + Loki 双源证据消费、收敛、RCA |
+| C | `hybrid_fallback_observation` | 真实指标（同 order-service） | **Hybrid 兜底观测**：模型不走 submit 时 final `<rca_result>` 兜底是否稳定 |
+
+**第一原则**：首轮只把 Scripted→Real，Backend/Tool/Prompt/预算均不变。**故障注入留 L3 第二阶段**（届时加 exporter 可控故障 + Scenario CPU 真高/Error 真高/复合，研究单信号 vs 多信号对收敛影响）——两个实验不混。
+
+**A 的验收特例**：A 是负向控制，**不要求 `ROOT_CAUSE_FOUND`**。真实 CPU 正常时正确结论可能是 `INSUFFICIENT_EVIDENCE`（或收敛后承认证据不足），不应硬塞根因。若发现状态机缺少"告警被证伪/未发现异常"语义而只能落 INSUFFICIENT，**记录为 L3 发现点**（不是硬性门禁）。
+
+## 46.4 观测指标（每场景记录）
+
+| 指标 | 说明 |
+|------|------|
+| scenario / model | 场景名、模型 id |
+| duration | 总耗时 |
+| read_tool_calls | 只读工具调用次数（**脚本层对工具实例插桩，权威**，experiment 做法） |
+| total_steps | Agent 总步数 |
+| tool_order | 工具调用顺序（整段轨迹） |
+| submit_attempted | 是否尝试 submit |
+| rca_source | tool / final_answer / None |
+| rca_valid / evidence_count / evidence_sources | RCAResult 合法性、证据条数与来源集合 |
+| status / failure_code | 最终 Incident 状态与失败码 |
+| **budget_compliance** | `read_tool_calls <= agent_max_read_tools`（V1.6 收敛核心） |
+
+汇总额外观察：tool_path_rate、final_fallback_rate、avg/max read_calls、RCA_valid_rate。
+
+## 46.5 成功判据
+
+**核心门禁**（脚本可观测/可 gate）：
+- 预算内完成（budget_compliance）
+- 每场景最终得到合法 RCAResult **或** 显式承认证据不足（INSUFFICIENT_EVIDENCE，A 负向允许）
+- 无未捕获系统异常
+
+**不要求**：三场景全部 `rca_source=tool`（final_answer 是合法结果，作为观测而非唯一成功条件）。
+
+## 46.6 `--expect` 门禁（软/硬两层）
+
+```bash
+python scripts/l3_real_backend.py --expect rca         # 合法 RCA/显式 INSUFFICIENT
+python scripts/l3_real_backend.py --expect convergence # budget_compliance 全过
+python scripts/l3_real_backend.py --expect tool        # tool path 命中
+python scripts/l3_real_backend.py --expect fallback    # final fallback 命中
+python scripts/l3_real_backend.py --expect all
+```
+
+默认（无 `--expect`）只观测打印报告、不因模型行为判失败（仍因未捕获异常/缺 key/backend 未起 exit 非 0）。
+
+## 46.7 CI 与后续
+
+L3 全程手工；不入测试套。第二阶段（后续）评估 exporter 可控故障注入以研究单/多信号收敛。design.md 依据章自此至 46。实现时脚本须 `PYTHONIOENCODING=utf-8` 防乱码（Windows 控制台），`.env` key 严禁提交。
