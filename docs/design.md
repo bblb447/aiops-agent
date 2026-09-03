@@ -1,6 +1,6 @@
 # 基于 smolagents 的 AIOps Agent 系统设计文档
 
-**文档版本：** V1.3（V1.5 结构化 RCA 已实现见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章；Workload 服务负载见第 43 章；L1 Real Backend Integration 测试层设计见第 44 章）
+**文档版本：** V1.4（V1.5 结构化 RCA 已实现见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章；Workload 服务负载见第 43 章；L1 Real Backend Integration 测试层设计见第 44 章；L2 Scripted Agent + Real Backend 测试层设计见第 45 章）
 **项目名称：** AIOps Agent
 **核心框架：** smolagents
 **文档类型：** 系统设计文档
@@ -2271,3 +2271,103 @@ pytest -m integration tests/integration/   # 显式跑 L1
 - L1 面向"真实协议 + 真实 HTTP + 可重复数据"，**不依赖某台机器上恰好跑着的后端**；本地 `setup → up → pytest -m integration → down` 一条命令闭环。
 - L1 只到 Tools/Service，**不引入 Agent**（L2/L3 保留）；畸形语义不在此造（留 L0）。
 - 本阶段冻结于 master `4497543`，不再给 L1 追加测试。
+
+---
+
+# 45. L2 Scripted Agent + Real Backend（设计定稿，实现中）
+
+## 45.1 目标与边界
+
+在 L1 之上只加一层：**确定性（Scripted）Agent 消费真实 Prometheus/Loki，验证 Agent 编排、Tool 消费、Evidence 流与 RCA 状态机闭环**。
+
+```text
+L1 Green（真实后端 + Tool/Service）
+    ↓
+Scripted Agent（不推理，按固定计划产工具调用）
+    ↓
+真实 Tool
+    ↓
+真实 Prometheus / Loki
+    ↓
+Tool Selection / Evidence Flow / RCA State Machine
+```
+
+首版范围（2026-09-03 拍板）：
+- **A 单源**：真实 Prometheus → `query_workload(order-service)` → 证据 → `submit_rca_result` → `ROOT_CAUSE_FOUND`，`rca_source="tool"`。
+- **B 双源**：真实 Prometheus + 真实 Loki → `query_workload` + `search_logs` → 两条证据 → `submit_rca_result` → `ROOT_CAUSE_FOUND`，`rca_source="tool"`。
+- **Fallback**：Scripted Model 不调 submit → `final_answer` 带合法 `<rca_result>...</rca_result>` → 兜底通道 → `ROOT_CAUSE_FOUND`，`rca_source="final_answer"`。
+
+不做：CMDB 第三源（留后续）、自动修复、多 Agent、新 Tool、新数据源、改 RCA 协议、改 L1 生命周期。
+
+## 45.2 与既有层关系
+
+- **复用 L1 后端 session**：测试位于 `tests/integration/agent/`，继承父级 `conftest.py` 的 `l1_env` / `settings_l1`（同一 pytest 进程内 backend `up_all` 一次、`down_all` 一次）。`settings_l1` 提供三个真实 URL。
+- **L0 fixture 层不动**：`tests/agent/test_scenario_e2e.py`（monkeypatch httpx + fixture）保留，作为快速组件级场景测试。
+- **L3 变量唯一隔离**：本层成功后将 `Scripted Model` 换成真实 DeepSeek 即为 L3，实验变量只有"模型"。
+
+## 45.3 目录与运行
+
+```text
+tests/integration/agent/
+├── helpers.py              # ScriptedDiagnosisModel（plan 依序产工具调用 + 记录 calls）
+├── test_single_source.py   # 场景 A
+├── test_multi_source.py    # 场景 B
+└── test_fallback.py        # 场景 fallback
+```
+
+- marker 沿用 `integration`；无二进制时父 conftest `pytest.skip` 自动生效。
+- 运行：`pytest -m integration tests/integration/agent/`（L1 的 14 个用例不受影响）。
+
+## 45.4 Scripted Model（严格脚本化）
+
+`helpers.ScriptedDiagnosisModel(smolagents.models.Model)`：`__init__(plan)` 存计划；`generate(messages, **kw)` 每次 pop 计划返回对应工具调用 JSON（`{"name","arguments"}` 序列化进 `ChatMessage`），并记录 `messages` 到 `self.calls`。计划耗尽后兜底返回 `final_answer`（不应到达）。模型不推理——测试对象是工具链/状态机/收尾，不是模型能力。
+
+## 45.5 场景与断言
+
+通用测试骨架（三层共享）：
+```python
+svc = IncidentService()
+inc = svc.create("服务异常", "order-service", "critical", target="order-service")
+monkeypatch.setattr("app.llm.provider.LiteLLMProvider.make_agent_model", lambda self: model)
+investigate(settings_l1, svc, inc.incident_id, tools=build_tools(settings_l1))
+got = svc.get(inc.incident_id)
+```
+通用断言：`status == ROOT_CAUSE_FOUND`、`failure_code is None`、`rca is not None`、`0 <= rca.confidence <= 1`、每条 evidence 含非空 `source`/`fact`。
+
+**场景 A（test_single_source）**——plan：`query_workload("order-service")` → `submit_rca_result(...)` → `final_answer`。
+- 工具调用层：`model.calls` 中 `query_workload` 先于 `submit_rca_result` 出现（顺序）。
+- 真实响应被消费层：存在 TOOL_RESPONSE 消息，其 content 含 `"qps"`（真实 workload data 经 `ToolResult.to_dict`→JSON 后必含该键）——证明 Agent 读到真实 Prometheus 聚合而非自编。
+- `rca_source == "tool"`；证据 `source == "prometheus"`。
+- 拒绝自编：若 A 只断言最终状态而不查消费层，自编 RCA 也能通过——故消费层断言为强制。
+
+**场景 B（test_multi_source）**——plan：`query_workload` → `search_logs('{app="order-service"}')` → `submit_rca_result(...两条证据...)` → `final_answer`。
+- 工具调用层：三工具按序。
+- 消费层：存在含 `"qps"`（Prometheus）与含 `"order-service"`（Loki 日志流标签）的 TOOL_RESPONSE。
+- **证据 source 集合断言 `== {"prometheus", "loki"}`**（不允许同源两条冒充双源）。
+- `rca_source == "tool"`。
+
+**Fallback（test_fallback）**——plan：`query_metric("http_requests_total")` → `final_answer(answer=<含 rca_result JSON 的文本>)`。
+- `submit_rca_result` 在整个调用序列中**未出现**（submit 未被调用是 fallback 前提）。
+- 最终 `rca_source == "final_answer"`（不是 tool）。
+- 消费层：存在 TOOL_RESPONSE 含 `"http_requests_total"`（真实 Prom 系列名），证明真实后端被读。
+- RCA 校验走既有 `extract_rca_result`/`RCAResult` 通道。
+
+## 45.6 验收矩阵
+
+| 场景 | 真实后端 | Agent | RCA 通道 | `rca_source` | 关键断言 |
+|------|----------|-------|----------|--------------|----------|
+| A 单源 | Prometheus | Scripted | Tool 提交 | `tool` | query_workload→submit 顺序；消费层含 `qps`；ROOT_CAUSE_FOUND |
+| B 双源 | Prometheus + Loki | Scripted | Tool 提交 | `tool` | 三工具按序；消费层含 `qps` 与 `order-service`；evidence source set == {prometheus, loki} |
+| Fallback | Prometheus | Scripted | Final JSON | `final_answer` | submit 未调用；消费层含 `http_requests_total`；extract 通道合法 |
+
+共同：`ROOT_CAUSE_FOUND`、`failure_code=None`、`rca` 合法、confidence 0~1、evidence 非空且结构合法。
+
+## 45.7 数据前提与红线
+
+- 数据前提：真实后端 `order-service` 有量（L1 exporter counter 每 ~2s 递增 → workload 四字段非空；Loki 已 seed `{app="order-service"}`；`http_requests_total` 真实可查）。
+- 红线：**不改 `app/` 产品代码**；不新增 Tool/数据源；不改 RCA 协议/收尾；不改 L1 生命周期；不做自愈/多 Agent。
+- 断言依赖的工具响应特征字（`qps`/`order-service`/`http_requests_total`）来自真实后端序列化，若产品序列化格式演进导致断言碎，属于应修正测试而非放宽语义。
+
+## 45.8 CI 与后续
+
+L2 定位**本地 / 手工**（暂不入 GitHub Actions——比 L1 多一层 Agent 执行，失败诊断价值先于 CI 自动化）。CMDB 第三源（真实 Mock CMDB `get_service` 作证据源）与更多场景留后续评估，不塞进首版。L2 稳定后接 L3（换真实 DeepSeek，变量唯一）。
