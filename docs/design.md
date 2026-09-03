@@ -2416,6 +2416,8 @@ python tests/integration/backend.py down
 
 **A 的验收特例**：A 是负向控制，**不要求 `ROOT_CAUSE_FOUND`**。真实 CPU 正常时正确结论可能是 `INSUFFICIENT_EVIDENCE`（或收敛后承认证据不足），不应硬塞根因。若发现状态机缺少"告警被证伪/未发现异常"语义而只能落 INSUFFICIENT，**记录为 L3 发现点**（不是硬性门禁）。
 
+**A 负向判据（防虚构）**：A 的真正价值是"真实 CPU 正常时，模型不被告警文字诱导编造 CPU 异常证据/根因"。判据 `no_false_positive_cpu_evidence` = 提交的 RCAResult（若有）evidence 中**不得存在声称 CPU 异常的事实**（如 "CPU usage above 90%"、"CPU saturation"、"high CPU caused incident" 之类——真实后端无此事实）。若模型虚构即判 A 失败（`false_positive_cpu_evidence: FOUND`）。不要求模型输出固定文案，只判断是否把不存在的 CPU 异常当作事实。
+
 ## 46.4 观测指标（每场景记录）
 
 | 指标 | 说明 |
@@ -2433,27 +2435,64 @@ python tests/integration/backend.py down
 
 汇总额外观察：tool_path_rate、final_fallback_rate、avg/max read_calls、RCA_valid_rate。
 
-## 46.5 成功判据
+## 46.5 成功判据（按场景语义，非三场景通用）
 
-**核心门禁**（脚本可观测/可 gate）：
-- 预算内完成（budget_compliance）
-- 每场景最终得到合法 RCAResult **或** 显式承认证据不足（INSUFFICIENT_EVIDENCE，A 负向允许）
-- 无未捕获系统异常
+`budget_compliance`（`read_tool_calls <= agent_max_read_tools`）是每场景**必过的前提指标，但只反映调查预算满足，不代表场景业务成功**——场景成功必须由下表场景级结果判定，两者独立。
 
-**不要求**：三场景全部 `rca_source=tool`（final_answer 是合法结果，作为观测而非唯一成功条件）。
+| 场景 | 核心成功条件 |
+|------|--------------|
+| A（负向控制） | 预算内 + **无虚构 CPU 异常证据**（见 46.3 判据）+ 不因系统错误失败；最终 `INSUFFICIENT_EVIDENCE`（V1 状态机预期）或未来等价的"告警被证伪"负向状态 |
+| B（正向多源） | 预算内 + 合法 RCA + `status == ROOT_CAUSE_FOUND` + `evidence_sources == {"prometheus", "loki"}` |
+| C（Hybrid 兜底） | 预算内 + `submit_attempted == False` + 合法 RCA + `rca_source == "final_answer"` + `status == ROOT_CAUSE_FOUND` |
+
+**`INSUFFICIENT_EVIDENCE` 显式通过只适用于 A**，不作为 B/C 的通用放行——否则 B/C 空转/兜底失效也会被误判成功，违背场景目的。B/C 的 `rca_source` 不强制 `tool`（Hybrid：tool > final_answer 均合法，作为观测记录）。
+
+无未捕获系统异常是全局前提。
 
 ## 46.6 `--expect` 门禁（软/硬两层）
 
 ```bash
-python scripts/l3_real_backend.py --expect rca         # 合法 RCA/显式 INSUFFICIENT
-python scripts/l3_real_backend.py --expect convergence # budget_compliance 全过
-python scripts/l3_real_backend.py --expect tool        # tool path 命中
-python scripts/l3_real_backend.py --expect fallback    # final fallback 命中
-python scripts/l3_real_backend.py --expect all
+python scripts/l3_real_backend.py --expect rca         # 按 46.5 各场景 RCA 成功语义检查
+python scripts/l3_real_backend.py --expect convergence # 所有场景 budget_compliance=True
+python scripts/l3_real_backend.py --expect tool        # B/C 中至少一个 rca_source=tool（真实模型非确定，不要求全中）
+python scripts/l3_real_backend.py --expect fallback    # C 必须 rca_source=final_answer
+python scripts/l3_real_backend.py --expect all         # rca + convergence + tool(至少一) + fallback
 ```
+
+`--expect` 语义精确化：`rca`/`convergence` 按 46.5 场景表逐场景判定；`tool` 与 `fallback` 是针对 B/C 场景的路径断言——**`tool` = B/C 中至少一个场景成功走 tool path**（真实模型非确定，不要求三场景全 tool）；`fallback` = C 必须 `rca_source=final_answer`。A 是负向控制，不参与 tool/fallback 断言。
 
 默认（无 `--expect`）只观测打印报告、不因模型行为判失败（仍因未捕获异常/缺 key/backend 未起 exit 非 0）。
 
-## 46.7 CI 与后续
+## 46.7 报告示例（供换模型后横向对比）
 
-L3 全程手工；不入测试套。第二阶段（后续）评估 exporter 可控故障注入以研究单/多信号收敛。design.md 依据章自此至 46。实现时脚本须 `PYTHONIOENCODING=utf-8` 防乱码（Windows 控制台），`.env` key 严禁提交。
+```text
+Scenario: B error_spike_multisource
+Model: deepseek-v4-flash
+read_tool_calls: 3 | max_read_tools: 4 | budget_compliance: PASS
+tool_order:
+  query_workload
+  search_logs
+  submit_rca_result
+rca_source: tool | rca_valid: PASS
+evidence_sources: [prometheus, loki]
+status: ROOT_CAUSE_FOUND | failure_code: None
+```
+
+```text
+Scenario: A cpu_alert_negative_control
+read_tool_calls: 2 | budget_compliance: PASS
+status: INSUFFICIENT_EVIDENCE
+false_positive_cpu_evidence: NOT_FOUND
+```
+
+```text
+Scenario: C hybrid_fallback_observation
+read_tool_calls: 1 | budget_compliance: PASS
+submit_attempted: False
+rca_source: final_answer | rca_valid: PASS
+status: ROOT_CAUSE_FOUND
+```
+
+## 46.8 CI 与后续
+
+L3 全程手工；不入测试套。第二阶段（后续）评估 exporter 可控故障注入以研究单/多信号收敛。实现时脚本须 `PYTHONIOENCODING=utf-8` 防乱码（Windows 控制台），`.env` key 严禁提交。
