@@ -299,3 +299,115 @@ def _run_scenario(scenario: dict) -> dict:
                     "failure_code": None, "root_cause": None,
                     "evidence_count": 0, "evidence_sources": set(), "rca": None})
     return obs
+
+
+import argparse  # noqa: E402
+
+import httpx  # noqa: E402
+
+
+def _fmt(obs: dict, model_name: str) -> str:
+    read = obs.get("read_tool_calls", 0)
+    budget = obs.get("budget", 4)
+    lines = [
+        f"Scenario: {obs['name']}  [{obs['kind']}]",
+        f"title: {obs.get('title', '')}",
+        f"Model: {model_name} | duration: {obs['duration']}s",
+        f"read_tool_calls: {read} | max_read_tools: {budget} | "
+        f"budget_compliance: {'PASS' if budget_compliance(read, budget) else 'FAIL'} | "
+        f"total_steps: {obs.get('total_steps', 0)}",
+        "tool_order:",
+    ]
+    order = obs.get("tool_order") or []
+    lines += [f"  {t}" for t in order] if order else ["  -"]
+    if obs.get("system_error"):
+        lines.append(f"system_error: {obs['system_error']}")
+    ok, reason = scene_success(obs["name"], obs)
+    lines.append(f"scene_success: {'PASS' if ok else 'FAIL'} ({reason})")
+    lines.append(f"submit_attempted: {obs.get('submit_attempted')} | rca_source: {obs.get('rca_source')} | "
+                 f"rca_valid: {obs.get('rca_valid')} | status: {obs.get('status')} | "
+                 f"failure_code: {obs.get('failure_code')}")
+    if obs.get("kind") == "A":
+        fp = a_no_false_positive_cpu(obs.get("rca"))
+        lines.append(f"false_positive_cpu_evidence: {'NOT_FOUND' if fp else 'FOUND'}")
+    if obs.get("evidence_count"):
+        lines.append(f"evidence: {obs['evidence_count']} -> {sorted(obs.get('evidence_sources') or [])}")
+    if obs.get("root_cause"):
+        lines.append(f"root_cause: {obs['root_cause'][:140]}")
+    return "\n".join(lines)
+
+
+def _summary(results: list[dict], model_name: str) -> str:
+    n = max(len(results), 1)
+    tool_hits = sum(1 for o in results if o.get("rca_source") == "tool")
+    final_hits = sum(1 for o in results if o.get("rca_source") == "final_answer")
+    all_reads = [o.get("read_tool_calls", 0) for o in results]
+    valid = sum(1 for o in results if o.get("rca_valid"))
+    bc_ok = sum(1 for o in results if o.get("budget_compliance"))
+    return "\n".join([
+        "==== 汇总 ====",
+        f"model: {model_name}",
+        f"tool_path_rate: {tool_hits}/{len(results)}  final_fallback_rate: {final_hits}/{len(results)}",
+        f"avg_read_calls: {sum(all_reads) / n:.1f}  max_read_calls: {max(all_reads) if all_reads else 0}",
+        f"rca_valid_rate: {valid}/{len(results)}  budget_compliance_rate: {bc_ok}/{len(results)}",
+    ])
+
+
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(prog="l3_real_backend")
+    parser.add_argument("--expect", action="append", default=[],
+                        choices=["rca", "convergence", "tool", "fallback", "all"],
+                        help="可选门禁（默认只观测不失败）")
+    parser.add_argument("scene", nargs="*", help="场景名子串过滤（如 cpu / error / hybrid）")
+    args = parser.parse_args(argv)
+
+    settings = Settings()
+    if not settings.llm_api_key:
+        print("缺少 LLM API Key：请先配置 .env 的 llm_api_key / llm_base_url / llm_model")
+        return 2
+
+    # 不隐式管理 backend：探测真实后端可达性，给出友好提示。
+    try:
+        httpx.get(f"{PROM_URL}/-/ready", timeout=3).raise_for_status()
+    except httpx.HTTPError:
+        print(f"后端未就绪：请先运行 python tests/integration/backend.py up（需 {PROM_URL} 可达）")
+        return 3
+
+    selected = [s for s in SCENARIOS
+                if not args.scene or any(f in s["name"] for f in args.scene)]
+    print("\n==== L3 Real LLM + Real Backend 观测 ====")
+    print(f"model={settings.llm_model}  预算(read)={settings.agent_max_read_tools}  "
+          f"max_steps={settings.agent_max_steps}  场景数={len(selected)}\n")
+
+    results = []
+    for s in selected:
+        print(f"--- [{s['kind']}] {s['name']} | {s['title']} | tools={s['tools']} ---")
+        obs = _run_scenario(s)
+        print(_fmt(obs, settings.llm_model))
+        print()
+        results.append(obs)
+
+    print(_summary(results, settings.llm_model))
+    for obs in results:
+        ok, _reason = scene_success(obs["name"], obs)
+        print(f"  {obs['name']:<32} scene_success={'PASS' if ok else 'FAIL'} "
+              f"rca_source={obs.get('rca_source') or '-'} status={obs.get('status')}")
+
+    expects = set(args.expect)
+    if not expects:
+        return 0  # 默认只观测，不因模型行为判失败。
+    proj = [{
+        "name": o["name"],
+        "success": scene_success(o["name"], o)[0],
+        "rca_source": o.get("rca_source"),
+        "submit_attempted": o.get("submit_attempted"),
+        "budget_compliance": o.get("budget_compliance"),
+    } for o in results]
+    passed = evaluate_expect(expects, proj)
+    print(f"--expect {sorted(expects)} -> {'PASS' if passed else 'FAIL'}")
+    return 0 if passed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
