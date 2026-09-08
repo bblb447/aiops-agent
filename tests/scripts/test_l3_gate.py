@@ -48,6 +48,10 @@ def test_a_no_false_positive_cpu():
     # 虚构 CPU 异常 → 失败。
     assert a_no_false_positive_cpu(_rca(["CPU usage above 90%"])) is False
     assert a_no_false_positive_cpu(_rca(["high cpu caused the incident"])) is False
+    # 局部否定守卫：marker 紧邻前文是否定词 → 不算虚构（首跑 A 的 "并未出现 CPU 高负载"）。
+    assert a_no_false_positive_cpu(_rca(["实际 CPU 远低于 80% 阈值，服务本身并未出现 CPU 高负载"])) is True
+    assert a_no_false_positive_cpu(_rca(["没有观察到 CPU 高负载，但 cpu 占用过高 持续存在"])) is False
+    assert a_no_false_positive_cpu(_rca(["no high cpu observed in the logs"])) is True
 
 
 def test_scene_success_a_negative_control():

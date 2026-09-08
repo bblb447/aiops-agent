@@ -24,19 +24,41 @@ sys.path.insert(0, str(ROOT))
 CPU_FALSE_POSITIVE_MARKERS = ("cpu usage above", "cpu saturation", "high cpu",
                               "cpu 使用率", "cpu 高", "cpu 异常", "cpu 持续高", "cpu 占用过高")
 
+# 局部否定守卫：marker 命中处紧邻前文（有限窗口内）出现否定词 → 该次命中不算虚构。
+# 只查 marker 前一个局部窗口（非整句），避免"没有观察到 CPU 高负载，但后续 CPU 占用过高"
+# 这种"先否定后肯定"的句子被整句放行。纯规则，无需 NLP/第二个 LLM judge。
+CPU_NEGATION_WINDOW = 12
+CPU_NEGATION_MARKERS = ("并未", "并没有", "没有", "不存在", "未出现", "未检测到",
+                        "未", "无", "没", "not", "no", "never")
+
+
+def _locally_negated(text: str, marker_start: int, marker_len: int) -> bool:
+    pre = text[max(0, marker_start - CPU_NEGATION_WINDOW):marker_start]
+    return any(n in pre for n in CPU_NEGATION_MARKERS)
+
 
 def budget_compliance(read_total: int, budget: int) -> bool:
     return read_total <= budget
 
 
 def a_no_false_positive_cpu(rca) -> bool:
-    """A 负向判据：提交的 RCA（若有）不得虚构 CPU 异常证据。无 RCA 视为无虚构。"""
+    """A 负向判据：提交的 RCA（若有）不得虚构 CPU 异常证据。无 RCA 视为无虚构。
+
+    对每条证据扫描所有 marker 的全部出现位置；仅当某次命中前方局部窗口无否定词时
+    才判为虚构（真命中否定句如"并未出现 CPU 高负载"不误报）。"""
     if rca is None:
         return True
     for e in getattr(rca, "evidence", []) or []:
         text = f"{getattr(e, 'fact', '')} {getattr(e, 'source', '')}".lower()
-        if any(m in text for m in CPU_FALSE_POSITIVE_MARKERS):
-            return False
+        for m in CPU_FALSE_POSITIVE_MARKERS:
+            start = 0
+            while True:
+                i = text.find(m, start)
+                if i < 0:
+                    break
+                if not _locally_negated(text, i, len(m)):
+                    return False
+                start = i + len(m)
     return True
 
 
