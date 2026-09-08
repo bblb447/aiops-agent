@@ -284,6 +284,8 @@ def _run_scenario(scenario: dict) -> dict:
         # 不做任何消息内容/字符串搜索。
         "submit_attempted": bool(sub and sub.submit_attempted),
         "submit_last_validation_code": sub.last_validation_code if sub else None,
+        # total_steps 以 len(model.calls) 观测：当前 smolagents ToolCallingAgent 每个 agent 步执行一次
+        # 模型 generate，二者等价；此为版本相关不变量，升级 smolagents 改变内部执行模型后需复核。
         "total_steps": len(model.calls) if model else 0,
     }
     if got is not None:
