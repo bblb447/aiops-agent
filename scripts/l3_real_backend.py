@@ -99,3 +99,203 @@ def evaluate_expect(expects: set[str], results: list[dict]) -> bool:
         if not (c and c[0].get("rca_source") == "final_answer" and c[0].get("submit_attempted") is False):
             return False
     return True
+
+
+import time  # noqa: E402
+
+from app.agent import agent as _agent_mod  # noqa: E402
+from app.agent.agent import investigate  # noqa: E402
+from app.config import Settings  # noqa: E402
+from app.incident.service import IncidentService  # noqa: E402
+from app.llm.provider import LiteLLMProvider  # noqa: E402
+from app.tools.knowledge import KnowledgeTool  # noqa: E402
+from app.tools.logging import LoggingTool  # noqa: E402
+from app.tools.monitoring import MonitoringTool  # noqa: E402
+
+# 真实后端地址（backend.py up 后可用；scripts 不隐式管理生命周期）。
+PROM_URL = "http://127.0.0.1:9090"
+LOKI_URL = "http://127.0.0.1:3100"
+CMDB_URL = "http://127.0.0.1:8081"
+
+SCENARIOS = [
+    dict(
+        name="cpu_alert_negative_control", kind="A",
+        title="order-service CPU 使用率高",
+        service="order-service", severity="critical",
+        observed_value=95.0, threshold=80.0, target="server-01",
+        tools=("monitoring", "knowledge"),
+    ),
+    dict(
+        name="error_spike_multisource", kind="B",
+        title="order-service 错误率上升（HTTP 500）",
+        service="order-service", severity="major",
+        observed_value=None, threshold=None, target=None,
+        tools=("monitoring", "logging", "knowledge"),
+    ),
+    dict(
+        name="hybrid_fallback_observation", kind="C",
+        title="order-service 服务异常",
+        service="order-service", severity="critical",
+        observed_value=None, threshold=None, target=None,
+        tools=("monitoring", "logging"),
+    ),
+]
+
+# 脚本层插桩（权威）：_READ_ORDER 只含只读工具调用（预算计数基础）；
+# _FULL_ORDER 含只读 + submit（供 tool_order 展示整段轨迹）。
+_READ_ORDER: list[str] = []
+_FULL_ORDER: list[str] = []
+
+
+def _bump_read(name: str) -> None:
+    _READ_ORDER.append(name)
+    _FULL_ORDER.append(name)
+
+
+class _CountingMonitoring(MonitoringTool):
+    """只读计数子类：调用真实 MonitoringTool 并记录到顺序表（不 mock、不改返回值）。"""
+
+    def query_metric(self, metric: str, target: str = ""):
+        _bump_read("query_metric")
+        return super().query_metric(metric, target)
+
+    def query_workload(self, service: str):
+        _bump_read("query_workload")
+        return super().query_workload(service)
+
+    def query_metric_range(self, metric: str, target: str = "",
+                           start=None, end=None, step: str = "60s"):
+        _bump_read("query_metric_range")
+        return super().query_metric_range(metric, target, start, end, step)
+
+
+class _CountingLogging(LoggingTool):
+    def search_logs(self, query: str, limit: int = 50, start=None, end=None):
+        _bump_read("search_logs")
+        return super().search_logs(query, limit, start, end)
+
+
+class _CountingKnowledge(KnowledgeTool):
+    def search_runbook(self, keyword: str):
+        _bump_read("search_runbook")
+        return super().search_runbook(keyword)
+
+
+def make_tools(settings: Settings, scenario: dict) -> list:
+    tools = []
+    for name in scenario["tools"]:
+        tools.append({
+            "monitoring": _CountingMonitoring,
+            "logging": _CountingLogging,
+            "knowledge": _CountingKnowledge,
+        }[name](settings))
+    return tools
+
+
+class _LoggingModel:
+    """包真实模型做纯步数计数：generate 每次都转发给真实模型，不改行为。"""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls = []
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def generate(self, messages, **kwargs):
+        self.calls.append(messages)
+        return self._inner.generate(messages, **kwargs)
+
+
+def _run_scenario(scenario: dict) -> dict:
+    _READ_ORDER.clear()
+    _FULL_ORDER.clear()
+
+    settings = Settings()  # 读 .env；仅 URL/rag 覆写，llm_* 与 agent_* 保持 .env/env 值
+    settings.prometheus_url = PROM_URL
+    settings.loki_url = LOKI_URL
+    settings.cmdb_url = CMDB_URL
+    settings.rag_enabled = False
+    settings.agent_max_steps = int(os.environ.get("L3_MAX_STEPS", "10"))
+    budget = settings.agent_max_read_tools
+
+    holder: dict = {}
+    _orig_make = LiteLLMProvider.make_agent_model
+
+    def _wrap_model(self):
+        holder["model"] = _LoggingModel(_orig_make(self))
+        return holder["model"]
+
+    _orig_submit = _agent_mod.SubmitRCATool
+
+    class _RecordingSubmit(_orig_submit):
+        """记录型 SubmitRCATool 子类：investigate 内部以本类实例化（agent.py 模块全局引用被
+        临时替换），实例被捕获进 holder 供事后读 submit_attempted/校验码；不 mock、不改语义。"""
+
+        def __init__(self, svc, incident_id):
+            super().__init__(svc, incident_id)
+            holder["submit_tool"] = self
+
+        def submit_rca_result(self, *args, **kwargs):
+            _FULL_ORDER.append("submit_rca_result")
+            return super().submit_rca_result(*args, **kwargs)
+
+    svc = IncidentService()
+    inc = svc.create(
+        scenario["title"], scenario["service"], scenario["severity"],
+        source="prometheus", alert_id="alert-l3", target=scenario.get("target"),
+        observed_value=scenario.get("observed_value"),
+        threshold=scenario.get("threshold"),
+    )
+
+    t0 = time.time()
+    system_error = None
+    try:
+        LiteLLMProvider.make_agent_model = _wrap_model
+        _agent_mod.SubmitRCATool = _RecordingSubmit
+        investigate(settings, svc, inc.incident_id, tools=make_tools(settings, scenario))
+    except Exception as e:  # noqa: BLE001 - 真实 LLM/网络异常记为观测；investigate 已把最终状态落库
+        system_error = f"{type(e).__name__}: {e}"
+    finally:
+        LiteLLMProvider.make_agent_model = _orig_make
+        _agent_mod.SubmitRCATool = _orig_submit
+
+    got = None
+    try:
+        got = svc.get(inc.incident_id)  # 无论 investigate 正常/异常，都读最终落库状态
+    except Exception as e:  # noqa: BLE001
+        system_error = system_error or f"{type(e).__name__}: {e}"
+
+    read_total = len(_READ_ORDER)
+    sub = holder.get("submit_tool")
+    model = holder.get("model")
+    obs = {
+        "name": scenario["name"], "kind": scenario["kind"], "title": scenario["title"],
+        "duration": round(time.time() - t0, 1),
+        "read_tool_calls": read_total,
+        "budget": budget,
+        "budget_compliance": budget_compliance(read_total, budget),
+        "tool_order": list(_FULL_ORDER),
+        "system_error": system_error,
+        # submit_attempted 走权威 holder（investigate 事务内同一 SubmitRCATool 实例），
+        # 不做任何消息内容/字符串搜索。
+        "submit_attempted": bool(sub and sub.submit_attempted),
+        "submit_last_validation_code": sub.last_validation_code if sub else None,
+        "total_steps": len(model.calls) if model else 0,
+    }
+    if got is not None:
+        obs.update({
+            "rca_valid": got.rca is not None,
+            "rca_source": got.rca_source,
+            "status": got.status.value if getattr(got.status, "value", None) else got.status,
+            "failure_code": got.failure_code,
+            "root_cause": got.rca.root_cause if got.rca else None,
+            "evidence_count": len(got.rca.evidence) if got.rca else 0,
+            "evidence_sources": {e.source for e in got.rca.evidence} if got.rca else set(),
+            "rca": got.rca,
+        })
+    else:
+        obs.update({"rca_valid": False, "rca_source": None, "status": None,
+                    "failure_code": None, "root_cause": None,
+                    "evidence_count": 0, "evidence_sources": set(), "rca": None})
+    return obs
