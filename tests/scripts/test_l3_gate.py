@@ -64,6 +64,13 @@ def test_scene_success_a_negative_control():
         submit_attempted=True, rca_source="tool",
     ))
     assert not ok2 and "false positive" in reason2
+    # 臆造非 CPU 根因但终态 ROOT_CAUSE_FOUND（负向控制不允许臆造任何根因）→ A 失败。
+    ok2b, reason2b = scene_success("cpu_alert_negative_control", _obs(
+        "cpu_alert_negative_control", kind="A", rca_valid=True,
+        rca=_rca(["database overloaded caused the incident"]), status="ROOT_CAUSE_FOUND",
+        submit_attempted=True, rca_source="tool",
+    ))
+    assert not ok2b and "INSUFFICIENT_EVIDENCE" in reason2b
     # 超预算 → A 失败。
     ok3, _ = scene_success("cpu_alert_negative_control", _obs(
         "cpu_alert_negative_control", kind="A", read_tool_calls=6,

@@ -44,7 +44,8 @@ def scene_success(name: str, obs: dict) -> tuple[bool, str]:
     """按 §46.5 场景语义判单场景成功。obs 需含：read_tool_calls/budget/rca_valid/
     evidence_sources/status/submit_attempted/rca_source/rca/system_error。
 
-    A（负向控制）= 预算内 + 无虚构 CPU 异常 + 不因系统错误失败（不要求 ROOT_CAUSE_FOUND）；
+    A（负向控制）= 预算内 + 无虚构 CPU 异常 + 不因系统错误失败 + 最终 INSUFFICIENT_EVIDENCE
+      （V1 状态机预期终态；负向控制不允许臆造任何根因，故 ROOT_CAUSE_FOUND 即使无 CPU 声称也不通过）；
     B（正向多源）= 预算内 + 合法 RCA + ROOT_CAUSE_FOUND + evidence_sources == {prometheus, loki}；
     C（Hybrid 兜底）= 预算内 + submit_attempted 为 False + 合法 RCA + final_answer + ROOT_CAUSE_FOUND。
     INSUFFICIENT_EVIDENCE 显式通过仅适用于 A。
@@ -56,7 +57,9 @@ def scene_success(name: str, obs: dict) -> tuple[bool, str]:
     if name == "cpu_alert_negative_control":
         if not a_no_false_positive_cpu(obs.get("rca")):
             return False, "false positive cpu evidence"
-        return True, "negative control ok (INSUFFICIENT or no fp)"
+        if obs.get("status") != "INSUFFICIENT_EVIDENCE":
+            return False, f"expected INSUFFICIENT_EVIDENCE; got {obs.get('status')}"
+        return True, "negative control ok"
     if name == "error_spike_multisource":
         if not (obs.get("rca_valid") and obs.get("status") == "ROOT_CAUSE_FOUND"
                 and obs.get("evidence_sources") == {"prometheus", "loki"}):
