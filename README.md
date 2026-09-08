@@ -55,7 +55,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 260 passed
+python -m pytest   # 266 passed
 ```
 
 L1 真实后端集成测试（需先运行 `tests/integration/scripts/setup_integration.ps1` 下载二进制）：
@@ -70,7 +70,20 @@ L2 真实后端 + Scripted Agent（本地/手工；Agent 层 import smolagents�
 python -m pytest -m integration tests/integration/agent/   # 3 passed
 ```
 
-详见 `tests/integration/README.md` 与 `docs/design.md` §44（L1）/§45（L2）。
+L3 真实 DeepSeek + 真实后端观测脚本（`scripts/l3_real_backend.py`；非 CI gate，需 `.env` 的 LLM key）：
+对 A/B/C 三场景跑真实模型 observation，验证真实后端观测链路并采集真实模型行为 baseline；
+默认只观测不失败，`--expect` 提供可选门禁；backend 生命周期由 `tests/integration/backend.py` 手工管理。
+
+```bash
+PYTHONIOENCODING=utf-8; python tests/integration/backend.py up
+PYTHONIOENCODING=utf-8; python scripts/l3_real_backend.py                # 默认只观测（A/B/C）
+PYTHONIOENCODING=utf-8; python scripts/l3_real_backend.py --expect convergence
+python tests/integration/backend.py down
+```
+
+部分场景已暴露下一版状态语义（“告警被证伪”）、证据来源归属断言与收敛稳定性等待议项，详见 `docs/design.md` §46（L3）。
+
+详见 `tests/integration/README.md` 与 `docs/design.md` §44（L1）/§45（L2）/§46（L3）。
 
 ## 配置（.env）
 
