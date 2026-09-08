@@ -239,9 +239,17 @@ def _run_scenario(scenario: dict) -> dict:
             super().__init__(svc, incident_id)
             holder["submit_tool"] = self
 
-        def submit_rca_result(self, *args, **kwargs):
+        def submit_rca_result(self, root_cause: str = "", confidence=None,
+                              evidence=None, hypotheses=None, recommendations=None,
+                              summary=None):
+            # 签名必须与产品 SubmitRCATool.submit_rca_result 完全一致：adapt_tools 用
+            # inspect.signature 建工具 inputs schema，宽签名 (*args/**kwargs) 会被封包成
+            # {'args','kwargs'} 两入参 → 调用必 TypeError，且发生在产品方法体执行前，
+            # 使 submit_attempted 失真、全场景被迫走 final 兜底（首跑已实证）。
             _FULL_ORDER.append("submit_rca_result")
-            return super().submit_rca_result(*args, **kwargs)
+            return super().submit_rca_result(
+                root_cause=root_cause, confidence=confidence, evidence=evidence,
+                hypotheses=hypotheses, recommendations=recommendations, summary=summary)
 
     svc = IncidentService()
     inc = svc.create(
