@@ -1,15 +1,20 @@
-"""绑定本次 Incident 的 RCA 提交工具（V1.5，docs/design.md 第 41 章）。
+"""绑定本次 Incident 的 RCA 提交工具（V1.5/V1.7，docs/design.md §41 + §47）。
 
 SubmitRCATool 在 investigate() 内按 (svc, incident_id) 动态实例化，不属于全局只读工具
 工厂 build_tools()。职责：只做校验 + 存 holder，**不写 Incident**；最终状态由
 investigate() 作为单一事务边界统一落库。
 
+V1.7：校验收敛到 RCAResult 的 model_validator（verdict-aware）。submit 工具与 final
+<rca_result> 两通道共享同一 schema，杜绝"Tool 一套、Final 一套"。本工具不再手写逐字段
+规则，只负责把失败 ValidationError 转成可读消息与 failure_code（rca_validation_code）。
+
 关键规则：
 - holder.rca_result 只被成功提交更新；失败提交永不覆盖已有成功结果。
 - submit_rca_result 是业务结果提交；final_answer 仅是结束信号。
 """
-from app.incident.codes import LOW_CONFIDENCE, MISSING_EVIDENCE
-from app.incident.model import EvidenceItem, RCAResult
+from pydantic import ValidationError
+
+from app.incident.model import RCAResult, rca_validation_code
 from app.incident.service import IncidentService
 from app.tools.base import ToolResult
 
@@ -29,71 +34,61 @@ class SubmitRCATool:
 
     def submit_rca_result(self, root_cause: str = "", confidence: float = None,
                           evidence: list = None, hypotheses: list = None,
-                          recommendations: list = None, summary: str = None) -> ToolResult:
-        """提交本 Incident 的最终 RCA 结论（首选提交通道），成功即代表根因已定位。
+                          recommendations: list = None, summary: str = None,
+                          verdict: str = None) -> ToolResult:
+        """提交本 Incident 的最终调查结论（首选提交通道），成功即代表结论已落锁。
 
-        当证据足以判断根因时，优先调用本工具结束调查。若模型无法调用本工具，
-        才允许改在 final_answer 中输出 <rca_result> 标签包裹的严格 JSON 作为兜底；
-        本工具是首选，不要为了省事直接跳过。
+        结论三选一（verdict，V1.7）：
+          - ROOT_CAUSE_FOUND：找到根因，root_cause 必须非空；
+          - NO_ANOMALY：告警被证伪 / 未发现对应异常，root_cause 必须省略
+            （禁止填入 "metric_alert_false_positive" 之类伪根因），evidence 说明为何认为无异常；
+          - INCONCLUSIVE：已调查但证据不足以定论，root_cause 必须省略，仍须保留至少 1 条 evidence；
+            这是合法结论，不是失败。
+        当证据足以判断根因时，优先调用本工具结束调查；本工具是首选，不要为了省事
+        直接跳过。若模型无法调用本工具，才允许改在 final_answer 中输出 <rca_result>
+        标签包裹的严格 JSON 作为兜底。
 
         参数:
-          - root_cause (string): 根因结论，简短明确，如 "deployment_regression"
-          - confidence (number): 置信度 0~1，如 0.87
-          - evidence (array): 支撑根因的证据列表，至少 1 条；每条必须是对象
-            {"source": "数据源(prometheus/loki/cmdb/runbook...)", "fact": "证据事实"}，
-            例如 {"source": "prometheus", "fact": "cpu_usage=95.2 超过阈值 80"}
-          - hypotheses (array, 可选): 候选假设列表，如 ["deployment_regression", "traffic_spike"]
+          - verdict (string, 可选): 上述三值之一；省略且 root_cause 非空时按 ROOT_CAUSE_FOUND 兼容。
+          - root_cause (string, 可选): 根因；仅 ROOT_CAUSE_FOUND 需要非空。
+          - confidence (number, 可选): ROOT_CAUSE_FOUND/NO_ANOMALY 必填 0~1；INCONCLUSIVE 可选。
+          - evidence (array): 至少 1 条；每条为对象 {"source": "数据源", "fact": "证据事实"}，
+            source/fact 不能为空。
+          - hypotheses (array, 可选): 候选假设列表
           - recommendations (array, 可选): 处置建议列表
           - summary (string, 可选): 一句话总结
 
-        校验失败会返回错误信息，你可修正后重试；成功后本 Incident 进入 ROOT_CAUSE_FOUND。
+        校验失败会返回错误信息，你可修正后重试；成功后 Incident 终态由 verdict 决定
+        （ROOT_CAUSE_FOUND / NO_ANOMALY→RESOLVED / INCONCLUSIVE→INSUFFICIENT_EVIDENCE）。
         """
         self.submit_attempted = True
-        root_cause = str(root_cause or "").strip()
-        evidence = evidence or []
-        hypotheses = hypotheses or []
-        recommendations = recommendations or []
-
-        errors = []
-        code = None
-        if confidence is None or isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-            errors.append("confidence 必须提供且为 0~1 的数字")
-            code = LOW_CONFIDENCE
-        elif not (0.0 <= confidence <= 1.0):
-            errors.append(f"confidence 必须在 0~1 之间，收到 {confidence}")
-            code = LOW_CONFIDENCE
-
-        if not root_cause:
-            errors.append("root_cause 不能为空")
-        if not evidence:
-            errors.append("evidence 至少需要 1 条")
-        else:
-            for i, item in enumerate(evidence):
-                if not isinstance(item, dict):
-                    errors.append(f"evidence[{i}] 必须是包含 source/fact 的对象")
-                    continue
-                src = item.get("source")
-                fact = item.get("fact")
-                if not src or not str(src).strip() or not fact or not str(fact).strip():
-                    errors.append(f"evidence[{i}] 的 source 和 fact 不能为空")
-
-        if errors:
-            self.validation_error = "; ".join(errors)
-            self.last_validation_code = code or MISSING_EVIDENCE
+        rc = str(root_cause or "").strip() or None
+        v = (verdict or "").strip().upper() or None
+        payload = {
+            "verdict": v,
+            "root_cause": rc,
+            "confidence": confidence,
+            "evidence": [dict(e) if isinstance(e, dict) else e for e in (evidence or [])],
+            "hypotheses": [str(h) for h in (hypotheses or [])],
+            "recommendations": [str(r) for r in (recommendations or [])],
+            "summary": summary,
+        }
+        try:
+            result = RCAResult(**payload)
+        except ValidationError as exc:
+            self.validation_error = self._fmt_error(exc)
+            self.last_validation_code = rca_validation_code(exc)
             return ToolResult(success=False, tool="submit_rca_result", error=self.validation_error)
-
-        result = RCAResult(
-            root_cause=root_cause,
-            confidence=float(confidence),
-            evidence=[
-                EvidenceItem(source=str(e["source"]).strip(), fact=str(e["fact"]).strip())
-                for e in evidence
-            ],
-            hypotheses=[str(h) for h in hypotheses],
-            recommendations=[str(r) for r in recommendations],
-            summary=summary,
-        )
         self.rca_result = result
         self.validation_error = None
         self.last_validation_code = None
         return ToolResult(success=True, tool="submit_rca_result", data=result.model_dump())
+
+    @staticmethod
+    def _fmt_error(exc: ValidationError) -> str:
+        parts = []
+        for err in exc.errors():
+            loc = ".".join(str(x) for x in err.get("loc", ()))
+            msg = err.get("msg", "").replace("Value error, ", "").strip()
+            parts.append(f"{loc}: {msg}" if loc else msg)
+        return "RCA 校验失败: " + "; ".join(parts)

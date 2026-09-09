@@ -87,3 +87,39 @@ def test_block_embedded_in_long_text():
     r, code = extract_rca_result(text)
     assert r is not None
     assert r.root_cause == "disk_full"
+
+
+# ===== V1.7 verdict-aware（spec §6：final 通道与 tool 同源） =====
+
+
+def test_extract_no_anomaly_block():
+    r, code = extract_rca_result(_block({
+        "verdict": "NO_ANOMALY", "root_cause": None, "confidence": 0.96,
+        "evidence": [{"source": "prometheus", "fact": "实际 CPU 6.8% 低于阈值"}]}))
+    assert code is None
+    assert r.verdict.value == "NO_ANOMALY"
+    assert r.root_cause is None
+
+
+def test_extract_inconclusive_block_ok_without_confidence():
+    r, code = extract_rca_result(_block({
+        "verdict": "INCONCLUSIVE", "root_cause": None,
+        "evidence": [{"source": "prometheus", "fact": "波动但无法定因"}]}))
+    assert code is None
+    assert r.verdict.value == "INCONCLUSIVE"
+
+
+def test_extract_no_anomaly_conflict_rejected():
+    r, code = extract_rca_result(_block({
+        "verdict": "NO_ANOMALY", "root_cause": "metric_alert_false_positive",
+        "confidence": 0.9, "evidence": [{"source": "s", "fact": "f"}]}))
+    assert r is None
+    assert code == "MISSING_EVIDENCE"
+
+
+def test_extract_root_cause_found_missing_confidence_low_confidence():
+    r, code = extract_rca_result(_block({
+        "verdict": "ROOT_CAUSE_FOUND", "root_cause": "x",
+        "evidence": [{"source": "s", "fact": "f"}]}))
+    assert r is None
+    assert code == "LOW_CONFIDENCE"

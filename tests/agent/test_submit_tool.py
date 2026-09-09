@@ -109,3 +109,45 @@ def test_adapts_to_single_submit_rca_tool():
     svc, tool = _tool("INC-1")
     adapters = adapt_tools([tool])
     assert [a.name for a in adapters] == ["submit_rca_result"]
+
+
+# ===== V1.7 verdict-aware（spec §6：submit 通道） =====
+
+
+def test_submit_no_anomaly_success():
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service")
+    tool = SubmitRCATool(svc, inc.incident_id)
+    r = tool.submit_rca_result(
+        verdict="NO_ANOMALY", root_cause="", confidence=0.96,
+        evidence=[{"source": "prometheus", "fact": "实际 CPU 6.8% 低于阈值 80%"}])
+    assert r.success is True
+    assert tool.rca_result.verdict.value == "NO_ANOMALY"
+    assert tool.rca_result.root_cause is None
+
+
+def test_submit_no_anomaly_rejects_pseudo_root_cause():
+    _, tool = _tool("INC-1")
+    r = tool.submit_rca_result(
+        verdict="NO_ANOMALY", root_cause="metric_alert_false_positive",
+        confidence=0.96, evidence=[{"source": "s", "fact": "f"}])
+    assert r.success is False
+    assert tool.last_validation_code == "MISSING_EVIDENCE"
+    assert tool.rca_result is None
+
+
+def test_submit_inconclusive_explicit_success():
+    _, tool = _tool("INC-1")
+    r = tool.submit_rca_result(
+        verdict="INCONCLUSIVE", root_cause="", confidence=None,
+        evidence=[{"source": "prometheus", "fact": "指标有波动，无法定根因"}])
+    assert r.success is True
+    assert tool.rca_result.verdict.value == "INCONCLUSIVE"
+
+
+def test_submit_legacy_without_verdict_derives_root_cause_found():
+    _, tool = _tool("INC-1")
+    r = tool.submit_rca_result(root_cause="deployment_regression", confidence=0.87,
+                               evidence=[{"source": "prometheus", "fact": "CPU 涨"}])
+    assert r.success is True
+    assert tool.rca_result.verdict.value == "ROOT_CAUSE_FOUND"

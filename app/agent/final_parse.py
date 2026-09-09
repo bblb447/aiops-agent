@@ -9,22 +9,19 @@ import json
 
 from pydantic import ValidationError
 
-from app.incident.codes import LOW_CONFIDENCE, MISSING_EVIDENCE
-from app.incident.model import RCAResult
+from app.incident.codes import MISSING_EVIDENCE
+from app.incident.model import RCAResult, rca_validation_code
 
 BLOCK_START = "<rca_result>"
 BLOCK_END = "</rca_result>"
 
 
-def _confidence_error(e: ValidationError) -> bool:
-    return any("confidence" in err.get("loc", ()) for err in e.errors())
-
-
 def extract_rca_result(text: str | None) -> tuple[RCAResult | None, str | None]:
     """返回 (RCAResult, None) 成功；无区块 → (None, None)；区块非法 → (None, code)。
 
-    code ∈ {LOW_CONFIDENCE, MISSING_EVIDENCE}，与 submit 工具同一套语义：
-    confidence 缺失/非法 → LOW_CONFIDENCE；其余结构违例 → MISSING_EVIDENCE。
+    code 与 submit 工具同源（rca_validation_code，spec §6.2）：
+    confidence 问题 → LOW_CONFIDENCE；verdict/root_cause 等结构违例 → MISSING_EVIDENCE。
+    verdict 缺失 + root_cause 非空按 ROOT_CAUSE_FOUND 兼容（legacy）。
     """
     if not text:
         return None, None
@@ -45,5 +42,5 @@ def extract_rca_result(text: str | None) -> tuple[RCAResult | None, str | None]:
     try:
         result = RCAResult(**data)
     except ValidationError as e:
-        return None, (LOW_CONFIDENCE if _confidence_error(e) else MISSING_EVIDENCE)
+        return None, rca_validation_code(e)
     return result, None
