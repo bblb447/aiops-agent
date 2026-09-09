@@ -2,7 +2,7 @@
 
 基于 **smolagents** 的 **Evidence-driven AIOps Diagnostic Agent**：从告警触发到根因结论的只读闭环。Agent 动态调用监控、日志、CMDB、Runbook 工具收集证据，给出带证据、带置信度的根因分析。
 
-> **定位**：Agent-first 的故障诊断/RCA 引擎，不是告警管理平台（告警治理交给平台层，本项目可作其独立 RCA 子系统）。当前为只读诊断闭环，不执行生产写操作。V1.5 结构化 RCA / V1.6 调查收敛已实现（详见 [docs/design.md](docs/design.md) 第 41-42 章）。
+> **定位**：Agent-first 的故障诊断/RCA 引擎，不是告警管理平台（告警治理交给平台层，本项目可作其独立 RCA 子系统）。当前为只读诊断闭环，不执行生产写操作。V1.5 结构化 RCA / V1.6 调查收敛 / V1.7 调查结果语义已实现（详见 [docs/design.md](docs/design.md) 第 41-42 / 47 章）。
 
 ## 功能
 
@@ -14,7 +14,8 @@
 - **告警上下文入 Incident**：创建时携带 `source/alert_id/target/labels/annotations/observed_value/threshold/affected_assets`，注入诊断 prompt，RCA 有真实故障数据可用。
 - **时间序列查询**：`query_metric_range`（Prometheus range query）+ `search_logs` 可指定时间窗，支撑时间关联分析。
 - **服务负载展示（workload）**：`GET /api/v1/workload/{service}` + Agent 工具 `query_workload` 复用同一 `WorkloadService`，返回服务 QPS/错误率/CPU/内存汇总（Prometheus）。
-- **结构化 RCA（V1.5）**：`RCAResult`（`root_cause / confidence / evidence[] / hypotheses[]`）写入 `Incident.rca`，`rca_source` 记录来源。混合收尾：首选 `submit_rca_result` 工具，兜底为 `final_answer` 中 `<rca_result>` 标签的严格 JSON，两条通道共用同一 schema 校验（`rca_source` = tool / final_answer）。无有效 RCA 不得 `ROOT_CAUSE_FOUND`；失败归因 `failure_code`（六码：NO_SUBMISSION / MISSING_EVIDENCE / LOW_CONFIDENCE / LLM_ERROR / TOOL_ERROR / MAX_STEPS）。真实模型冒烟验证见 `scripts/smoke_real_llm.py`。
+- **结构化 RCA（V1.5）**：`RCAResult`（`verdict / root_cause / confidence / evidence[] / hypotheses[]`）写入 `Incident.rca`，`rca_source` 记录来源。混合收尾：首选 `submit_rca_result` 工具，兜底为 `final_answer` 中 `<rca_result>` 标签的严格 JSON，两条通道共用同一 schema 校验（`rca_source` = tool / final_answer）。无有效 RCA 不得 `ROOT_CAUSE_FOUND`；失败归因 `failure_code`（六码：NO_SUBMISSION / MISSING_EVIDENCE / LOW_CONFIDENCE / LLM_ERROR / TOOL_ERROR / MAX_STEPS）。真实模型冒烟验证见 `scripts/smoke_real_llm.py`。
+- **调查结果语义（V1.7）**：`status`（生命周期/处置）与 `verdict`（对世界的判断）拆成两轴。`verdict ∈ {ROOT_CAUSE_FOUND, NO_ANOMALY, INCONCLUSIVE}`（不含 ESCALATED）：找到根因→ROOT_CAUSE_FOUND；告警被证伪/无异常→NO_ANOMALY 直关 `RESOLVED`；证据不足可显式提交 INCONCLUSIVE（查过但不足以定论，属合法结论）。`root_cause`/`confidence` 业务必填由 verdict 条件约束，legacy（无 verdict + root_cause 非空）自动按 ROOT_CAUSE_FOUND 兼容。Tool/Final 双通道共享 RCAResult 中央校验。
 
 ## 技术栈
 
@@ -55,7 +56,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 266 passed
+python -m pytest   # 290 passed
 ```
 
 L1 真实后端集成测试（需先运行 `tests/integration/scripts/setup_integration.ps1` 下载二进制）：
@@ -81,7 +82,7 @@ PYTHONIOENCODING=utf-8; python scripts/l3_real_backend.py --expect convergence
 python tests/integration/backend.py down
 ```
 
-部分场景已暴露下一版状态语义（“告警被证伪”）、证据来源归属断言与收敛稳定性等待议项，详见 `docs/design.md` §46（L3）。
+真实 L3 已验证“告警被证伪”可经 `verdict=NO_ANOMALY / status=RESOLVED` 正确表达（V1.7 §47）；证据来源归属（`source` 字段模型乱填）与收敛稳定性（预算偶超）为后续 Provenance / 收敛待议项，详见 `docs/design.md` §46（L3）。
 
 详见 `tests/integration/README.md` 与 `docs/design.md` §44（L1）/§45（L2）/§46（L3）。
 
@@ -110,7 +111,7 @@ app/
 prompts/         Agent 诊断 prompt 模板
 runbooks/        Runbook 知识（RAG 数据源）
 tests/           pytest 全量测试
-docs/design.md   完整设计文档（43 章，V1.5 结构化 RCA / V1.6 收敛 / 1.3 Workload）
+docs/design.md   完整设计文档（47 章，V1.5 结构化 RCA / V1.6 收敛 / 1.3 Workload / V1.7 调查结果语义 §47）
 ```
 
 ## License

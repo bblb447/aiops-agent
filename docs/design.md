@@ -2441,7 +2441,7 @@ python tests/integration/backend.py down
 
 | 场景 | 核心成功条件 |
 |------|--------------|
-| A（负向控制） | 预算内 + **无虚构 CPU 异常证据**（见 46.3 判据）+ 不因系统错误失败；最终 `INSUFFICIENT_EVIDENCE`（V1 状态机预期）或未来等价的"告警被证伪"负向状态 |
+| A（负向控制） | 预算内 + **无虚构 CPU 异常证据**（见 46.3 判据）+ 不因系统错误失败；最终 `INSUFFICIENT_EVIDENCE`（V1 状态机预期）或未来等价的"告警被证伪"负向状态（**V1.7 §47 已兑现：A 预期终态改 `verdict == NO_ANOMALY` / `status == RESOLVED`，本判据在 `scripts/l3_real_backend.py` 与测试已同步升级**） |
 | B（正向多源） | 预算内 + 合法 RCA + `status == ROOT_CAUSE_FOUND` + `evidence_sources == {"prometheus", "loki"}` |
 | C（Hybrid 兜底） | 预算内 + `submit_attempted == False` + 合法 RCA + `rca_source == "final_answer"` + `status == ROOT_CAUSE_FOUND` |
 
@@ -2496,3 +2496,86 @@ status: ROOT_CAUSE_FOUND
 ## 46.8 CI 与后续
 
 L3 全程手工；不入测试套。第二阶段（后续）评估 exporter 可控故障注入以研究单/多信号收敛。实现时脚本须 `PYTHONIOENCODING=utf-8` 防乱码（Windows 控制台），`.env` key 严禁提交。
+
+---
+
+# 47. V1.7 Verdict Semantics（调查结果语义，已实现 2026-09-09）
+
+## 47.1 职责分离（四轴）
+
+```text
+status        → 生命周期 / 执行处置
+verdict       → 调查对世界的判断
+rca           → 支撑 verdict 的结构化调查结果（Incident.rca 为唯一权威，root_cause 为派生兼容字段）
+failure_code  → 为什么调查没有正常完成（执行 / 提交失败归因）
+```
+
+验证原则（三层职责，产品不越界）：
+
+```text
+模型负责    "我认为是什么"        （verdict 是模型声明的世界判断）
+产品负责    "你提交的结构是否自洽"  （只验 verdict 与结构字段一致性，不验与 evidence 事实语义一致性）
+证据审计/L3 负责 "你说得有没有道理"
+```
+
+## 47.2 `verdict` 枚举与 RCAResult 校验
+
+```python
+class InvestigationVerdict(str, Enum):
+    ROOT_CAUSE_FOUND = "ROOT_CAUSE_FOUND"   # 有根因
+    NO_ANOMALY = "NO_ANOMALY"               # 告警被证伪 / 未发现对应异常
+    INCONCLUSIVE = "INCONCLUSIVE"            # 查过但不足以形成 ROOT_CAUSE_FOUND / NO_ANOMALY
+```
+
+**`ESCALATED` 不进 verdict**——它是执行链处置，不是世界结论。`RCAResult.root_cause`/`confidence` 技术类型为 `str | None` / `float | None`，**业务必填由 verdict 条件约束**：
+
+| verdict | root_cause | confidence | evidence |
+|---|---|---|---|
+| `ROOT_CAUSE_FOUND` | 必须非空 | 必须 | ≥1 |
+| `NO_ANOMALY` | 必须 `None` | 必须 | ≥1 |
+| `INCONCLUSIVE` | 必须 `None` | 可选 | ≥1（显式提交时） |
+| 缺失（legacy） | 非空 → **推导 ROOT_CAUSE_FOUND** | 按推导后 verdict | ≥1 |
+| 缺失 | `None`/空 → **拒绝** | — | — |
+
+拒绝示例（双通道一致）：`NO_ANOMALY + root_cause="..."` / `ROOT_CAUSE_FOUND + root_cause=None` / `ROOT_CAUSE_FOUND + confidence=None`（LOW_CONFIDENCE）/ `verdict=None + root_cause=None`。`root_cause` 空白串视同缺省；evidence 的 source/fact 去空后不得为空。
+
+**`INCONCLUSIVE` 语义**：表示调查过程实际获得了一定证据但不足以形成有效世界结论；执行链失败、超步数、后端/LLM 异常**不产生 verdict**（保持 `None`），不冒充"未决"。
+
+**领域不变量**：
+- `Incident.verdict` 必须与 `Incident.rca.verdict` 一致；
+- `rca` 为 `None` 时，仅允许 `verdict=INCONCLUSIVE`（`INSUFFICIENT_EVIDENCE` 系统归因路径，failure_code 解释原因）；
+- `status == ESCALATED` 时 `verdict` 必须为 `None`。
+
+## 47.3 状态机与终态矩阵
+
+状态机仅新增一条转移：`INVESTIGATING → RESOLVED`（NO_ANOMALY 负向直关单专用通道，不加新枚举成员；RESOLVED 不泛化为"所有调查完成"）。
+
+| 场景 | status | verdict | rca | failure_code |
+|---|---|---|---|---|
+| 找到根因 | `ROOT_CAUSE_FOUND` | `ROOT_CAUSE_FOUND` | 必须（root_cause 非空） | `None` |
+| 告警被证伪 | `RESOLVED` | `NO_ANOMALY` | 必须（root_cause=None） | `None` |
+| 主动认怂（显式提交） | `INSUFFICIENT_EVIDENCE` | `INCONCLUSIVE` | 有 | `None` |
+| 未提交/无效提交（系统归因） | `INSUFFICIENT_EVIDENCE` | `INCONCLUSIVE` | 无 | `NO_SUBMISSION`/`MISSING_EVIDENCE`/`LOW_CONFIDENCE` |
+| 执行链失败 | `ESCALATED` | `None` | 无 | `LLM_ERROR`/`TOOL_ERROR`/`MAX_STEPS` |
+
+`verdict` 表达世界判断，`failure_code` 表达执行/提交失败原因，两者互不污染。后续 remediation eligibility 必须以 `verdict == ROOT_CAUSE_FOUND` 为资格条件，不能只看 `status`。
+
+## 47.4 双通道中央校验与 commit 分流
+
+`submit_rca_result` 与 final `<rca_result>` 两通道共用 `RCAResult` 的 `model_validator(mode="after")` 交叉校验；错误经共享 `rca_validation_code` 归类：confidence 问题→`LOW_CONFIDENCE`，verdict/root_cause 等结构冲突→`MISSING_EVIDENCE`（消息带错误标签，模型可读可重试）。`SubmitRCATool` 不再手写逐字段规则，只负责把 `ValidationError` 转成可读消息 + code。
+
+`investigate()` 的 `_commit_rca` 只以 `rca.verdict` 分流终态（绝不以 `root_cause` 存在与否判断）：ROOT_CAUSE_FOUND→status ROOT_CAUSE_FOUND；NO_ANOMALY→RESOLVED（root_cause=None）；显式 INCONCLUSIVE→INSUFFICIENT_EVIDENCE（rca 保留、failure_code=None）。无有效结论路径落 `verdict=INCONCLUSIVE`；run 异常/超步数落 `status=ESCALATED`、`verdict=None`。
+
+## 47.5 L3-A 判据与真实验证（2026-09-09）
+
+A（负向控制）判据由"最终 INSUFFICIENT_EVIDENCE"升级为：预算内 + `verdict == NO_ANOMALY` + 无虚构 CPU 异常证据 + 非系统错误（真实模型自报 ROOT_CAUSE_FOUND 属评估/观测，产品不再吞语义）。
+
+真实 `deepseek-v4-flash` + 真实后端端到端验证（`scripts/l3_real_backend.py`，观测存 `docs/l3-observations/v1.7-*`，untracked）：
+
+| 场景 | 结果 | 说明 |
+|---|---|---|
+| A 负向 | `verdict=NO_ANOMALY` / `status=RESOLVED` / submit tool 通道 / budget 3/4 PASS | **Phase-1 核心成功**：模型理解新契约，root_cause 省略、evidence 用"实测 9.6%<阈值 80%"支撑无异常 |
+| B 正向多源 | 显式 `verdict=INCONCLUSIVE` / `status=INSUFFICIENT_EVIDENCE`（rca 5 evidence）/ budget **7/4 FAIL** | 真实异常(error_rate≈20%)但 Loki 400+error_rate 时序空→诚实认怂；新显式 INCONCLUSIVE 通道端到端可用。超预算=既有 F4 |
+| C Hybrid | 显式 `verdict=INCONCLUSIVE` / tool 通道（非 final 兜底）/ budget 4/4 PASS | 模型偏好 submit>final（场景前提非确定）；且实证校验重试：首次 confidence 字符串被拒→改数值重试成功 |
+
+三个 verdict 均被真实模型触达。遗留待议项（非 V1.7 Phase-1 范围）：evidence `source` 字段模型乱填（F3，观察到 `query_workload(order-service)`/`CountingMonitoring.query_workload`/`query_metric/Prometheus` 等变体）→ Provenance 阶段动机；预算偶超（F4）→ 收敛/Hard Budget 阶段。
