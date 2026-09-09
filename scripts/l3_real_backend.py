@@ -79,9 +79,10 @@ def scene_success(name: str, obs: dict) -> tuple[bool, str]:
     if name == "cpu_alert_negative_control":
         if not a_no_false_positive_cpu(obs.get("rca")):
             return False, "false positive cpu evidence"
-        if obs.get("status") != "INSUFFICIENT_EVIDENCE":
-            return False, f"expected INSUFFICIENT_EVIDENCE; got {obs.get('status')}"
-        return True, "negative control ok"
+        # V1.7（§47）：A 负向正确终态 = verdict NO_ANOMALY / status RESOLVED，而非硬塞 INSUFFICIENT_EVIDENCE。
+        if obs.get("verdict") != "NO_ANOMALY":
+            return False, f"expected verdict NO_ANOMALY; got {obs.get('verdict')}"
+        return True, "negative control ok (no anomaly)"
     if name == "error_spike_multisource":
         if not (obs.get("rca_valid") and obs.get("status") == "ROOT_CAUSE_FOUND"
                 and obs.get("evidence_sources") == {"prometheus", "loki"}):
@@ -263,7 +264,7 @@ def _run_scenario(scenario: dict) -> dict:
 
         def submit_rca_result(self, root_cause: str = "", confidence=None,
                               evidence=None, hypotheses=None, recommendations=None,
-                              summary=None):
+                              summary=None, verdict=None):
             # 签名必须与产品 SubmitRCATool.submit_rca_result 完全一致：adapt_tools 用
             # inspect.signature 建工具 inputs schema，宽签名 (*args/**kwargs) 会被封包成
             # {'args','kwargs'} 两入参 → 调用必 TypeError，且发生在产品方法体执行前，
@@ -271,7 +272,8 @@ def _run_scenario(scenario: dict) -> dict:
             _FULL_ORDER.append("submit_rca_result")
             return super().submit_rca_result(
                 root_cause=root_cause, confidence=confidence, evidence=evidence,
-                hypotheses=hypotheses, recommendations=recommendations, summary=summary)
+                hypotheses=hypotheses, recommendations=recommendations, summary=summary,
+                verdict=verdict)
 
     svc = IncidentService()
     inc = svc.create(
@@ -323,6 +325,7 @@ def _run_scenario(scenario: dict) -> dict:
             "rca_valid": got.rca is not None,
             "rca_source": got.rca_source,
             "status": got.status.value if getattr(got.status, "value", None) else got.status,
+            "verdict": got.verdict.value if getattr(got.verdict, "value", None) else None,
             "failure_code": got.failure_code,
             "root_cause": got.rca.root_cause if got.rca else None,
             "evidence_count": len(got.rca.evidence) if got.rca else 0,
@@ -331,7 +334,7 @@ def _run_scenario(scenario: dict) -> dict:
         })
     else:
         obs.update({"rca_valid": False, "rca_source": None, "status": None,
-                    "failure_code": None, "root_cause": None,
+                    "verdict": None, "failure_code": None, "root_cause": None,
                     "evidence_count": 0, "evidence_sources": set(), "rca": None})
     return obs
 
@@ -360,8 +363,8 @@ def _fmt(obs: dict, model_name: str) -> str:
     ok, reason = scene_success(obs["name"], obs)
     lines.append(f"scene_success: {'PASS' if ok else 'FAIL'} ({reason})")
     lines.append(f"submit_attempted: {obs.get('submit_attempted')} | rca_source: {obs.get('rca_source')} | "
-                 f"rca_valid: {obs.get('rca_valid')} | status: {obs.get('status')} | "
-                 f"failure_code: {obs.get('failure_code')}")
+                 f"rca_valid: {obs.get('rca_valid')} | verdict: {obs.get('verdict')} | "
+                 f"status: {obs.get('status')} | failure_code: {obs.get('failure_code')}")
     if obs.get("kind") == "A":
         fp = a_no_false_positive_cpu(obs.get("rca"))
         lines.append(f"false_positive_cpu_evidence: {'NOT_FOUND' if fp else 'FOUND'}")
@@ -427,7 +430,8 @@ def main(argv=None) -> int:
     for obs in results:
         ok, _reason = scene_success(obs["name"], obs)
         print(f"  {obs['name']:<32} scene_success={'PASS' if ok else 'FAIL'} "
-              f"rca_source={obs.get('rca_source') or '-'} status={obs.get('status')}")
+              f"verdict={obs.get('verdict') or '-'} rca_source={obs.get('rca_source') or '-'} "
+              f"status={obs.get('status')}")
 
     expects = set(args.expect)
     if not expects:

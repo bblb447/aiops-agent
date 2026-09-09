@@ -28,7 +28,7 @@ def _obs(name, **over):
         "name": name, "kind": "B", "read_tool_calls": 2, "budget": 4,
         "rca_valid": False, "rca": None, "status": "INSUFFICIENT_EVIDENCE",
         "submit_attempted": False, "rca_source": None, "evidence_sources": set(),
-        "system_error": False,
+        "verdict": None, "system_error": False,
     }
     base.update(over)
     return base
@@ -54,30 +54,31 @@ def test_a_no_false_positive_cpu():
     assert a_no_false_positive_cpu(_rca(["no high cpu observed in the logs"])) is True
 
 
-def test_scene_success_a_negative_control():
-    # 预算内 + INSUFFICIENT + 无虚构 + 无系统错误 → 负向控制通过。
+def test_scene_success_a_negative_control_now_verdict_no_anomaly():
+    # V1.7：负向正确 = verdict NO_ANOMALY（status RESOLVED），而非硬塞 INSUFFICIENT_EVIDENCE。
     ok, reason = scene_success("cpu_alert_negative_control", _obs(
-        "cpu_alert_negative_control", kind="A", rca=None,
-        status="INSUFFICIENT_EVIDENCE", submit_attempted=False, rca_source=None,
+        "cpu_alert_negative_control", kind="A", rca_valid=True,
+        verdict="NO_ANOMALY", status="RESOLVED", submit_attempted=True, rca_source="tool",
+        rca=_rca(["实际 CPU 6.8% 低于阈值"]),
     ))
     assert ok, reason
-    # 虚构 CPU 异常 → A 失败。
+    # 负向仍虚构 CPU 异常 → A 失败。
     ok2, reason2 = scene_success("cpu_alert_negative_control", _obs(
         "cpu_alert_negative_control", kind="A", rca_valid=True,
-        rca=_rca(["CPU saturation detected"]), status="ROOT_CAUSE_FOUND",
-        submit_attempted=True, rca_source="tool",
+        verdict="NO_ANOMALY", status="RESOLVED", submit_attempted=True, rca_source="tool",
+        rca=_rca(["CPU saturation detected"]),
     ))
     assert not ok2 and "false positive" in reason2
-    # 臆造非 CPU 根因但终态 ROOT_CAUSE_FOUND（负向控制不允许臆造任何根因）→ A 失败。
+    # 模型自报 ROOT_CAUSE_FOUND（即使无 CPU 声称、臆造非 CPU 根因）→ A 失败。
     ok2b, reason2b = scene_success("cpu_alert_negative_control", _obs(
         "cpu_alert_negative_control", kind="A", rca_valid=True,
-        rca=_rca(["database overloaded caused the incident"]), status="ROOT_CAUSE_FOUND",
-        submit_attempted=True, rca_source="tool",
+        verdict="ROOT_CAUSE_FOUND", status="ROOT_CAUSE_FOUND", submit_attempted=True,
+        rca_source="tool", rca=_rca(["database overloaded caused the incident"]),
     ))
-    assert not ok2b and "INSUFFICIENT_EVIDENCE" in reason2b
+    assert not ok2b and "NO_ANOMALY" in reason2b
     # 超预算 → A 失败。
     ok3, _ = scene_success("cpu_alert_negative_control", _obs(
-        "cpu_alert_negative_control", kind="A", read_tool_calls=6,
+        "cpu_alert_negative_control", kind="A", verdict="NO_ANOMALY", read_tool_calls=6,
     ))
     assert not ok3
 
