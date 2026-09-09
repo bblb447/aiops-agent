@@ -31,3 +31,8 @@ def test_reopen_flow():
     assert transition(S.RESOLVED, S.REOPEN) == S.REOPEN
     assert transition(S.ESCALATED, S.REOPEN) == S.REOPEN
     assert transition(S.REOPEN, S.TRIAGING) == S.TRIAGING
+
+
+def test_investigating_can_close_no_anomaly():
+    # NO_ANOMALY → RESOLVED 是 V1.7 负向直关单专用通道（verdict 承载语义，status 不给 ROOT_CAUSE_FOUND）。
+    assert transition(S.INVESTIGATING, S.RESOLVED) == S.RESOLVED
