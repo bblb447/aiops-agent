@@ -218,6 +218,7 @@ def test_investigate_no_submission_is_insufficient(monkeypatch):
     got = svc.get(inc.incident_id)
     assert got.status == S.INSUFFICIENT_EVIDENCE
     assert got.failure_code == "NO_SUBMISSION"
+    assert got.verdict.value == "INCONCLUSIVE"   # 查过但无有效结论 → 系统归因 INCONCLUSIVE
     assert got.rca is None
 
 
@@ -267,6 +268,7 @@ def test_investigate_max_steps_is_escalated(monkeypatch):
     got = svc.get(inc.incident_id)
     assert got.status == S.ESCALATED
     assert got.failure_code == "MAX_STEPS"
+    assert got.verdict is None   # 执行失败不冒充世界结论
 
 
 def test_investigate_max_steps_with_valid_final_json_is_root_cause(monkeypatch):
@@ -342,6 +344,7 @@ def test_investigate_escalates_on_llm_failure(monkeypatch):
     assert got.failure_code == "LLM_ERROR"
     assert any("调查失败" in t.get("event", "") for t in got.timeline)
     assert got.root_cause is None
+    assert got.verdict is None   # LLM 失败 ESCALATED 不产生世界结论
 
 
 def test_adapter_forward_dispatches_to_tool(monkeypatch):
@@ -477,3 +480,79 @@ def test_build_agent_uses_injected_provider():
     assert p.calls == 1
     assert isinstance(agent.model, LiteLLMModel)
     assert agent.model.model_id == "openai/provided-model"
+
+
+# ===== V1.7 investigate 按 verdict 分流（spec §7） =====
+
+
+class _NoAnomalySubmitAgent(_FakeAgent):
+    def run(self, prompt, return_full_result=True):
+        self.prompt = prompt
+        a = self._submit_adapter()
+        if a is not None:
+            a.forward(verdict="NO_ANOMALY", confidence=0.96, evidence=[
+                {"source": "prometheus", "fact": "实际 CPU 6.8% 低于阈值 80%"}])
+        return _Run(output="告警被证伪，无异常", state="success")
+
+
+class _InconclusiveSubmitAgent(_FakeAgent):
+    def run(self, prompt, return_full_result=True):
+        self.prompt = prompt
+        a = self._submit_adapter()
+        if a is not None:
+            a.forward(verdict="INCONCLUSIVE", evidence=[
+                {"source": "prometheus", "fact": "指标有波动，但无法确定根因"}])
+        return _Run(output="证据不足以定论", state="success")
+
+
+class _NoAnomalyFinalAgent(_FakeAgent):
+    def run(self, prompt, return_full_result=True):
+        self.prompt = prompt
+        return _Run(output=_rca_block({
+            "verdict": "NO_ANOMALY", "root_cause": None, "confidence": 0.96,
+            "evidence": [{"source": "prometheus", "fact": "实际 CPU 6.8% 低于阈值"}]}), state="success")
+
+
+def test_investigate_no_anomaly_submit_resolves(monkeypatch):
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _NoAnomalySubmitAgent(t, s.agent_max_steps))
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.RESOLVED
+    assert got.verdict.value == "NO_ANOMALY"
+    assert got.root_cause is None
+    assert got.rca is not None
+    assert got.rca.verdict.value == "NO_ANOMALY"
+    assert got.rca_source == "tool"
+    assert got.failure_code is None
+
+
+def test_investigate_inconclusive_submit_insufficient(monkeypatch):
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _InconclusiveSubmitAgent(t, s.agent_max_steps))
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.INSUFFICIENT_EVIDENCE
+    assert got.verdict.value == "INCONCLUSIVE"
+    assert got.rca is not None
+    assert got.failure_code is None
+
+
+def test_investigate_no_anomaly_final_fallback(monkeypatch):
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda s, t: _NoAnomalyFinalAgent(t, s.agent_max_steps))
+    investigate(Settings(llm_api_key="sk-test"), svc, inc.incident_id, tools=[])
+    got = svc.get(inc.incident_id)
+    assert got.status == S.RESOLVED
+    assert got.verdict.value == "NO_ANOMALY"
+    assert got.rca_source == "final_answer"
+
+
+def test_diagnose_prompt_contains_verdict_instructions():
+    from app.agent.agent import PROMPT_FILE
+    txt = PROMPT_FILE.read_text(encoding="utf-8")
+    assert "ROOT_CAUSE_FOUND" in txt and "NO_ANOMALY" in txt and "INCONCLUSIVE" in txt
+    assert "root_cause" in txt

@@ -22,7 +22,7 @@ from app.incident.codes import (
     LLM_ERROR, MAX_STEPS, MISSING_EVIDENCE, NO_SUBMISSION,
 )
 from app.incident.service import IncidentService
-from app.incident.model import IncidentStatus as S
+from app.incident.model import IncidentStatus as S, InvestigationVerdict
 from app.incident.state import transition
 from app.llm.base import LLMProvider
 from app.llm.provider import LiteLLMProvider
@@ -41,8 +41,13 @@ _DEFAULT_PROMPT = (
     "就必须停止继续调查并立即收尾提交 RCA；不要为了找更多证据而查满预算。\n"
     "收尾二选一：①首选调用 submit_rca_result 提交结构化 RCA；"
     "②兜底调用 final_answer 时把严格 JSON 放进 <rca_result>...</rca_result> 标签。"
-    "JSON 字段：root_cause 为字符串；confidence 为 0 到 1 之间的数字；evidence 为数组且至少 1 条，"
-    "每条必须是含 source（字符串，数据源）与 fact（字符串，证据事实）两个字段的对象；"
+    "结论三选一（verdict）：ROOT_CAUSE_FOUND 确定根因且 root_cause 必填非空；"
+    "NO_ANOMALY 表示告警被证伪/未发现对应异常，此时 root_cause 必须省略且禁止填入伪根因，"
+    "用 evidence 说明为何无异常；INCONCLUSIVE 表示已调查但证据不足以定论，root_cause 省略并至少留 1 条 evidence，"
+    "这是合法结论而非失败。"
+    "JSON 字段：verdict 为上述三值之一；root_cause 为字符串（NO_ANOMALY/INCONCLUSIVE 时省略）；"
+    "confidence 为 0 到 1 之间的数字（ROOT_CAUSE_FOUND/NO_ANOMALY 必填，INCONCLUSIVE 可省略）；"
+    "evidence 为数组且至少 1 条，每条必须是含 source（字符串，数据源）与 fact（字符串，证据事实）两个字段的对象；"
     "hypotheses 与 recommendations 为字符串数组；summary 可选。"
     "注意：evidence 不要用纯字符串数组；hypotheses 不要用对象数组。"
 )
@@ -248,12 +253,14 @@ def investigate(settings: Settings, svc: IncidentService,
         summary = f"{type(run_error).__name__}: {run_error}"
         svc.add_timeline(incident_id, {"event": f"调查失败: {summary}"})
         inc.failure_code = LLM_ERROR
+        inc.verdict = None   # 执行链失败不冒充世界结论
         inc.status = transition(inc.status, S.ESCALATED)
         svc.update(inc)
         raise run_error
 
     if max_steps_hit:
         inc.failure_code = MAX_STEPS
+        inc.verdict = None   # 执行链失败不冒充世界结论
         inc.status = transition(inc.status, S.ESCALATED)
     else:
         # 归因：final 区块尝试但非法 > 工具尝试但失败 > 从未提交。
@@ -264,6 +271,7 @@ def investigate(settings: Settings, svc: IncidentService,
         else:
             code = NO_SUBMISSION
         inc.failure_code = code
+        inc.verdict = InvestigationVerdict.INCONCLUSIVE   # 查过但无有效世界结论（系统归因）
         inc.status = transition(inc.status, S.INSUFFICIENT_EVIDENCE)
     svc.add_timeline(incident_id, {"event": f"Agent 结论: {conclusion}"})
     svc.update(inc)
@@ -271,9 +279,20 @@ def investigate(settings: Settings, svc: IncidentService,
 
 
 def _commit_rca(inc, rca, source: str) -> None:
-    """单一事务边界：把有效 RCA 落到 Incident（状态机需在调用方已处于 INVESTIGATING）。"""
+    """单一事务边界：把有效 RCA 落到 Incident，终态由 rca.verdict 分流（spec §7.1）。
+
+    只以 rca.verdict 为分流依据，绝不以 root_cause 存在与否判断——语义轴在 verdict。
+    """
     inc.rca = rca
     inc.rca_source = source
-    inc.root_cause = rca.root_cause
+    inc.verdict = rca.verdict
     inc.failure_code = None
-    inc.status = transition(inc.status, S.ROOT_CAUSE_FOUND)
+    if rca.verdict is InvestigationVerdict.ROOT_CAUSE_FOUND:
+        inc.root_cause = rca.root_cause
+        inc.status = transition(inc.status, S.ROOT_CAUSE_FOUND)
+    elif rca.verdict is InvestigationVerdict.NO_ANOMALY:
+        inc.root_cause = None
+        inc.status = transition(inc.status, S.RESOLVED)
+    else:  # INCONCLUSIVE（显式提交：调查进行了但不足以定论）
+        inc.root_cause = None
+        inc.status = transition(inc.status, S.INSUFFICIENT_EVIDENCE)

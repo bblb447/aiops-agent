@@ -7,4 +7,13 @@
 收尾二选一：
   ① 首选：调用 submit_rca_result 提交结构化 RCA；
   ② 兜底：调用 final_answer 时把严格 JSON 放进 <rca_result>...</rca_result> 标签内。
-两者 JSON 字段一致：root_cause 为字符串；confidence 为 0 到 1 之间的数字；evidence 为数组且至少 1 条，每条必须是含 source（字符串，数据源）与 fact（字符串，证据事实）两个字段的对象；hypotheses 与 recommendations 为字符串数组；summary 为可选字符串。注意：evidence 不要用纯字符串数组；hypotheses 不要用对象数组。
+结论三选一（verdict）：
+  - ROOT_CAUSE_FOUND：确定根因，root_cause 必须为非空字符串；
+  - NO_ANOMALY：判断告警被证伪 / 未发现对应异常，此时 root_cause 必须省略，
+    禁止填入 "metric_alert_false_positive" 之类的伪根因；用 evidence 说明为何认为无异常（如实测值低于阈值）；
+  - INCONCLUSIVE：已调查但证据不足以定论时使用，root_cause 必须省略，至少保留 1 条结构化 evidence；
+    这是合法结论，不是失败。
+两者 JSON 字段一致：verdict 为上述三值之一；root_cause 为字符串（NO_ANOMALY/INCONCLUSIVE 时省略）；
+confidence 为 0 到 1 之间的数字（ROOT_CAUSE_FOUND/NO_ANOMALY 必填，INCONCLUSIVE 可省略）；
+evidence 为数组且至少 1 条，每条必须是含 source（字符串，数据源）与 fact（字符串，证据事实）两个字段的对象，且两者不能为空；
+hypotheses 与 recommendations 为字符串数组；summary 为可选字符串。注意：evidence 不要用纯字符串数组；hypotheses 不要用对象数组。
