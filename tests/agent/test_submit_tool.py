@@ -55,7 +55,7 @@ def test_submit_rejects_non_dict_evidence_item():
     _, tool = _tool("INC-1")
     r = tool.submit_rca_result(
         root_cause="x", confidence=0.8,
-        evidence=["这是错误格式", {"source": "s", "fact": "f"}],
+        evidence=["这是错误格式", {"source": "prometheus", "fact": "f"}],
     )
     assert r.success is False
     assert tool.last_validation_code == "MISSING_EVIDENCE"
@@ -65,7 +65,7 @@ def test_submit_rejects_non_dict_evidence_item():
 def test_submit_rejects_empty_root_cause():
     _, tool = _tool("INC-1")
     r = tool.submit_rca_result(root_cause="  ", confidence=0.8,
-                               evidence=[{"source": "s", "fact": "f"}])
+                               evidence=[{"source": "prometheus", "fact": "f"}])
     assert r.success is False
     assert tool.last_validation_code == "MISSING_EVIDENCE"
 
@@ -74,7 +74,7 @@ def test_submit_rejects_bad_confidence():
     for bad in [None, 1.5, -0.1]:
         _, tool = _tool("INC-1")
         r = tool.submit_rca_result(root_cause="x", confidence=bad,
-                                   evidence=[{"source": "s", "fact": "f"}])
+                                   evidence=[{"source": "prometheus", "fact": "f"}])
         assert r.success is False
         assert tool.last_validation_code == "LOW_CONFIDENCE"
 
@@ -83,7 +83,7 @@ def test_submit_lock_after_success():
     # 成功提交后，后续失败不得清空已锁存的 rca_result。
     _, tool = _tool("INC-1")
     ok = tool.submit_rca_result(root_cause="regression", confidence=0.9,
-                                evidence=[{"source": "s", "fact": "f"}])
+                                evidence=[{"source": "prometheus", "fact": "f"}])
     assert ok.success is True
     locked = tool.rca_result
     bad = tool.submit_rca_result(root_cause="x", confidence=0.9, evidence=[])
@@ -96,7 +96,7 @@ def test_submit_lock_after_success():
 def test_submit_optional_fields_default():
     _, tool = _tool("INC-1")
     r = tool.submit_rca_result(root_cause="disk_full", confidence=0.95,
-                               evidence=[{"source": "node_exporter", "fact": "99%"}])
+                               evidence=[{"source": "prometheus", "fact": "99%"}])
     assert r.success is True
     assert tool.rca_result.hypotheses == []
     assert tool.rca_result.recommendations == []
@@ -130,7 +130,7 @@ def test_submit_no_anomaly_rejects_pseudo_root_cause():
     _, tool = _tool("INC-1")
     r = tool.submit_rca_result(
         verdict="NO_ANOMALY", root_cause="metric_alert_false_positive",
-        confidence=0.96, evidence=[{"source": "s", "fact": "f"}])
+        confidence=0.96, evidence=[{"source": "prometheus", "fact": "f"}])
     assert r.success is False
     assert tool.last_validation_code == "MISSING_EVIDENCE"
     assert tool.rca_result is None
@@ -151,3 +151,24 @@ def test_submit_legacy_without_verdict_derives_root_cause_found():
                                evidence=[{"source": "prometheus", "fact": "CPU 涨"}])
     assert r.success is True
     assert tool.rca_result.verdict.value == "ROOT_CAUSE_FOUND"
+
+
+def test_invalid_source_plus_bad_confidence_still_low_confidence():
+    # spec §4.3：F3 不改变既有 precedence —— 同时含 source 错误与 confidence 错误时，
+    # rca_validation_code 因 confidence 错误优先仍返回 LOW_CONFIDENCE。
+    _, tool = _tool("INC-1")
+    r = tool.submit_rca_result(root_cause="x", confidence=1.5,
+                               evidence=[{"source": "query_workload", "fact": "f"}])
+    assert r.success is False
+    assert tool.last_validation_code == "LOW_CONFIDENCE"
+
+
+def test_invalid_source_plus_missing_confidence_is_missing_evidence():
+    # spec §4.3（2026-09-21 裁定）：字段级 source 校验失败会抑制 RCAResult 的
+    # mode="after" 模型级校验，故「非法 source + 缺 confidence」落 MISSING_EVIDENCE，
+    # 而非模型级校验本会给出的 LOW_CONFIDENCE。与既有 fact 空值语义同构。
+    _, tool = _tool("INC-1")
+    r = tool.submit_rca_result(root_cause="x", confidence=None,
+                               evidence=[{"source": "query_workload", "fact": "f"}])
+    assert r.success is False
+    assert tool.last_validation_code == "MISSING_EVIDENCE"

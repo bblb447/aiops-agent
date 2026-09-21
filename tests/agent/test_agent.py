@@ -52,7 +52,7 @@ class _FakeAgent:
         a = self._submit_adapter()
         if a is not None:
             a.forward(root_cause="x", confidence=confidence,
-                      evidence=[{"source": "s", "fact": "f"}])
+                      evidence=[{"source": "prometheus", "fact": "f"}])
 
     def run(self, prompt, return_full_result=True):
         self.prompt = prompt
@@ -140,7 +140,7 @@ class _ToolWinsOverFinalAgent(_FakeAgent):
         self.submit(valid=True)  # 工具成功
         return _Run(output=_rca_block({
             "root_cause": "final-json-结论", "confidence": 0.99,
-            "evidence": [{"source": "x", "fact": "y"}],
+            "evidence": [{"source": "prometheus", "fact": "y"}],
         }), state="success")
 
 

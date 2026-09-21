@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.incident.codes import LOW_CONFIDENCE, MISSING_EVIDENCE
+from app.incident.sources import EvidenceSource
 
 class IncidentSeverity(str, Enum):
     CRITICAL = "critical"
@@ -39,8 +40,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 class EvidenceItem(BaseModel):
-    source: str
+    source: EvidenceSource
     fact: str
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source(cls, v):
+        # 归一化边界：容忍大小写与首尾空白，不容忍语义变体（spec §4.1）。
+        # 允许值从 EvidenceSource 派生，禁止在此手写并列字面表（spec §6）。
+        allowed = " / ".join(s.value for s in EvidenceSource)
+        if not isinstance(v, str):
+            raise ValueError(f"[MISSING_EVIDENCE] source 必须是字符串；允许值：{allowed}")
+        try:
+            return EvidenceSource(v.strip().lower())
+        except ValueError:
+            raise ValueError(
+                f"[MISSING_EVIDENCE] source 非法值 '{v}'；允许值：{allowed}"
+            ) from None
 
 class RCAResult(BaseModel):
     """结构化调查结论记录（V1.7：概念从"根因分析"泛化为"调查结论"，代码名保留兼容）。
@@ -73,10 +89,11 @@ class RCAResult(BaseModel):
         # 归一：root_cause 空白串视同 None。
         rc = (self.root_cause or "").strip() or None
         self.root_cause = rc
-        # 证据内容不得空（source/fact 去空后仍为空 → 拒绝，两通道统一）。
+        # 证据内容不得空（fact 去空后仍为空 → 拒绝，两通道统一）。
+        # source 的空值/非法值由 EvidenceItem._normalize_source 拦截，此处不重复判断。
         for i, e in enumerate(self.evidence):
-            if not (e.source or "").strip() or not (e.fact or "").strip():
-                raise ValueError(f"[MISSING_EVIDENCE] evidence[{i}] 的 source 和 fact 不能为空")
+            if not (e.fact or "").strip():
+                raise ValueError(f"[MISSING_EVIDENCE] evidence[{i}] 的 fact 不能为空")
         v = self.verdict
         if v is None:
             if rc is not None:

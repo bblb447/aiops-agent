@@ -52,7 +52,7 @@ def test_block_bad_confidence_is_low_confidence():
     r, code = extract_rca_result(_block({
         "root_cause": "x",
         "confidence": 1.5,
-        "evidence": [{"source": "s", "fact": "f"}],
+        "evidence": [{"source": "prometheus", "fact": "f"}],
     }))
     assert r is None
     assert code == "LOW_CONFIDENCE"
@@ -63,7 +63,7 @@ def test_block_string_confidence_rejected_low_confidence():
     r, code = extract_rca_result(_block({
         "root_cause": "x",
         "confidence": "0.8",
-        "evidence": [{"source": "s", "fact": "f"}],
+        "evidence": [{"source": "prometheus", "fact": "f"}],
     }))
     assert r is None
     assert code == "LOW_CONFIDENCE"
@@ -72,7 +72,7 @@ def test_block_string_confidence_rejected_low_confidence():
 def test_block_missing_end_tag_rejected():
     r, code = extract_rca_result("x<rca_result>" + json.dumps({
         "root_cause": "x", "confidence": 0.8,
-        "evidence": [{"source": "s", "fact": "f"}],
+        "evidence": [{"source": "prometheus", "fact": "f"}],
     }))
     assert r is None
     assert code == "MISSING_EVIDENCE"
@@ -82,7 +82,7 @@ def test_block_embedded_in_long_text():
     # 区块嵌在自然语言里也能只取区块内容，不误读其他 JSON。
     text = ("根据分析……\n<rca_result>\n" + json.dumps(
         {"root_cause": "disk_full", "confidence": 0.95,
-         "evidence": [{"source": "node_exporter", "fact": "disk 99%"}]}) +
+         "evidence": [{"source": "prometheus", "fact": "disk 99%"}]}) +
         "\n</rca_result>\n还需要继续观察。")
     r, code = extract_rca_result(text)
     assert r is not None
@@ -112,7 +112,7 @@ def test_extract_inconclusive_block_ok_without_confidence():
 def test_extract_no_anomaly_conflict_rejected():
     r, code = extract_rca_result(_block({
         "verdict": "NO_ANOMALY", "root_cause": "metric_alert_false_positive",
-        "confidence": 0.9, "evidence": [{"source": "s", "fact": "f"}]}))
+        "confidence": 0.9, "evidence": [{"source": "prometheus", "fact": "f"}]}))
     assert r is None
     assert code == "MISSING_EVIDENCE"
 
@@ -120,6 +120,6 @@ def test_extract_no_anomaly_conflict_rejected():
 def test_extract_root_cause_found_missing_confidence_low_confidence():
     r, code = extract_rca_result(_block({
         "verdict": "ROOT_CAUSE_FOUND", "root_cause": "x",
-        "evidence": [{"source": "s", "fact": "f"}]}))
+        "evidence": [{"source": "prometheus", "fact": "f"}]}))
     assert r is None
     assert code == "LOW_CONFIDENCE"
