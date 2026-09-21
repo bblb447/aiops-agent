@@ -2591,7 +2591,7 @@ A（负向控制）判据由"最终 INSUFFICIENT_EVIDENCE"升级为：预算内 
 V1.7 已收口"调查结果语义"（`status` / `verdict` / `rca` / `failure_code` 四轴）。剩余工作分三类：
 
 ```text
-契约收口类（V1 遗留）  F3 证据来源归属 / Loki 日志工具契约 / F4 预算强制
+契约收口类（V1 遗留）  F3 证据来源归属（已实现） / Loki 日志工具契约 / F4 预算强制
 工程保障类             Evaluation / Regression（行为可量化、可对照）
 能力扩展类（V2）       K8s / Action Gateway / Approval / Audit 闭环
 ```
@@ -2609,13 +2609,13 @@ V2 能力扩展（执行闭环）
   Detect → Diagnose → Recommend → Approve → Execute → Verify → Audit
 ```
 
-| 序 | 阶段 | 解决的问题 | 规模 | 依赖 |
-|---|---|---|---|---|
-| 1 | F3 Provenance | evidence 来源不可信、不由契约约束 | 小～中 | 无（V1.7 遗留） |
-| 2 | Loki / LogQL Tool Contract | L3-B/C 日志源不可用（400） | 小 | 无 |
-| 3 | F4 Hard Budget | 软预算拦不住不确定模型 | 中 | Loki（场景完整后测） |
-| 4 | Evaluation / Regression | 改动缺少量化对照 | 中 | F3 / Loki / F4 定稿后固化 |
-| 5 | V2 K8s / Approval / Audit | 从诊断扩展到执行闭环 | 大 | 前四项完成 |
+| 序 | 阶段 | 解决的问题 | 规模 | 依赖 | 状态 |
+|---|---|---|---|---|---|
+| 1 | F3 Provenance | evidence 来源不可信、不由契约约束 | 小～中 | 无（V1.7 遗留） | 已实现（2026-09-21） |
+| 2 | Loki / LogQL Tool Contract | L3-B/C 日志源不可用（400） | 小 | 无 | 待做 |
+| 3 | F4 Hard Budget | 软预算拦不住不确定模型 | 中 | Loki（场景完整后测） | 待做 |
+| 4 | Evaluation / Regression | 改动缺少量化对照 | 中 | F3 / Loki / F4 定稿后固化 | 待做 |
+| 5 | V2 K8s / Approval / Audit | 从诊断扩展到执行闭环 | 大 | 前四项完成 | 待做 |
 
 第 1、2 项相互独立，可并行；3、4、5 严格串行。
 
