@@ -5,6 +5,7 @@ from app.config import Settings
 from app.incident.service import IncidentService
 from app.incident.sources import EvidenceSource
 from app.tools.factory import build_tools
+from app.tools.monitoring import MonitoringTool
 
 EXPECTED = {
     "MonitoringTool": EvidenceSource.PROMETHEUS,
@@ -52,3 +53,49 @@ def test_submit_tool_has_no_source_type_and_adapts_without_error():
     adapters = adapt_tools([tool])
     assert [a.name for a in adapters] == ["submit_rca_result"]
     assert "SubmitRCATool" not in adapters[0].description
+
+
+# --- Fix round 1：补两条覆盖缺口 -------------------------------------------------
+
+class _CountingMonitoring(MonitoringTool):
+    """L3 插桩子类形态（scripts/l3_real_backend.py 同名类的简化复刻）。
+
+    build_tools() 只返回四个基类实例，故原
+    test_adapter_description_never_leaks_python_class_name 从未把子类名送进断言；
+    本测试补上——它正是本任务要修的 bug 形态。
+    """
+
+
+def test_l3_subclass_adapter_description_does_not_leak_class_name():
+    # 走真实描述生成路径（adapt_tools → _ToolAdapter），不手搓 _ToolAdapter。
+    adapters = adapt_tools([_CountingMonitoring(Settings())])
+    assert {a.name for a in adapters} == {"query_metric", "query_metric_range", "query_workload"}
+    for adapter in adapters:
+        # 描述来自工具元数据/能力，而非任何具体 Python 类名。
+        assert "_CountingMonitoring" not in adapter.description
+        assert "MonitoringTool" not in adapter.description
+        # 去类名不等于丢来源指引：prometheus 指引必须在。
+        assert "prometheus" in adapter.description
+
+
+class _DocStubTool:
+    """本地桩：暴露的方法带真实 docstring，用于覆盖描述构造的 has-docstring 分支。
+
+    四个真实工具方法当前都无 docstring，getdoc 恒 None，or 兜底是唯一被走到的分支。
+    """
+
+    source_type = EvidenceSource.CMDB
+    exposed_methods = ["lookup"]
+
+    def lookup(self, key: str) -> dict:
+        """查询 CMDB 中的服务信息。"""
+        return {}
+
+
+def test_docstring_branch_keeps_docstring_and_still_carries_source_guidance():
+    adapters = adapt_tools([_DocStubTool()])
+    assert [a.name for a in adapters] == ["lookup"]
+    description = adapters[0].description
+    assert "查询 CMDB 中的服务信息。" in description
+    assert "证据来源(source)：cmdb" in description
+    assert "_DocStubTool" not in description
