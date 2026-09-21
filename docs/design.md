@@ -2626,7 +2626,8 @@ V2 能力扩展（执行闭环）
 不容忍语义变体）；非法值经既有 `rca_validation_code` 归 `MISSING_EVIDENCE`，未新增 failure_code；
 工具描述不再泄漏 Python 类名，prompt 允许值由枚举动态渲染。
 **遗留项已收敛**：观察到的 `query_workload(order-service)` / `CountingMonitoring.query_workload`
-等变体在类型层被拒，模型据可读错误重试。
+等变体在类型层被拒（**拒绝路径由 L0 覆盖**；真实模型侧的重试实证属 §47 的 confidence 用例，
+与本项无关）。
 **Provenance 强度边界（本阶段为 B，不是 C）**：F3 只保证提交的 `source` 落在域词表内，
 **不证明**某条 evidence 真的来自某次特定工具调用。字段名 `source_type` 表达的是"工具声明的归属"，
 不是"调用级真归属"——不得据此推断更强的溯源保证。
@@ -2637,7 +2638,7 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 **验证状态**：L0 **PASS**（328 passed）；L1 **PASS**（14 passed）；L2 **PASS**（3 passed，零改动，spec §7.3 冻结验证点成立）。
 
 **L3 真实 DeepSeek source 正向合规复验：PASS**（2026-09-21，B/C 场景；观测存
-`docs/l3-observations/f3-verify-2026-09-21.txt`）：`RCAResult.evidence[*].source` 穷举 **21/21** 落在
+`docs/l3-observations/f3-verify-2026-09-21.txt`）：`RCAResult.evidence[*].source` 穷举 **24/24** 落在
 `prometheus` / `loki` / `runbook`；source 位置污染形态命中 **0**；原 V1.7 观测到的
 `CountingMonitoring` / `query_metric/Prometheus` / `search_logs/Loki` 本次均为 **0 次**出现。
 **该次运行未触发非法 source 的拒绝/重试路径**（两处校验失败分别源于 evidence 非对象形态与 confidence
