@@ -329,7 +329,9 @@ def _run_scenario(scenario: dict) -> dict:
             "failure_code": got.failure_code,
             "root_cause": got.rca.root_cause if got.rca else None,
             "evidence_count": len(got.rca.evidence) if got.rca else 0,
-            "evidence_sources": {e.source for e in got.rca.evidence} if got.rca else set(),
+            # F3 收尾：source 已是 EvidenceSource 枚举成员，此处落 canonical value（str），
+            # 否则报告与失败信息会渲染成 <EvidenceSource.LOKI: 'loki'>。
+            "evidence_sources": {e.source.value for e in got.rca.evidence} if got.rca else set(),
             "rca": got.rca,
         })
     else:

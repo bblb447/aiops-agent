@@ -2639,6 +2639,26 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 `source_type` 而自动合规，但这**不等于**真实模型已被验证。
 **Future Evolution（不在本阶段）**：call-level provenance（`call_id` 真归属）见 F3 spec §11。
 
+**实现 Exit Criteria（逐项状态）**：
+
+1. `EvidenceSource` 唯一词表成立 —— **PASS**
+2. L0 覆盖非法 source / 大小写空白归一 / 既有 precedence —— **PASS**
+3. 四类只读工具声明 `source_type` —— **PASS**
+4. prompt 与工具描述不泄漏 Python 类名/方法名，且允许值由枚举派生 —— **PASS**
+5. L2 零改动通过（spec §7.3 冻结验证点）—— **PASS**
+
+**验证状态**：
+
+- L0：**PASS**（328 passed）
+- L1：**PASS**（14 passed）
+- L2：**PASS**（3 passed，零改动）
+- L3 真实 DeepSeek source 合规复验：**PENDING**（须用户确认后执行）
+
+**结论**：
+- F3 implementation = **COMPLETE**
+- F3 real-model verification = **PENDING**
+- F3 overall CLOSED = **待 L3 复验后宣布**（不在此节点宣布 CLOSED）
+
 ## 48.3 Loki / LogQL Tool Contract（日志工具契约）
 
 **现状（实测）**：`LoggingTool.search_logs(query)` 把模型给的原始串**直接作为 LogQL** 传给 `/loki/api/v1/query_range`（`app/tools/logging.py`）。模型发送 `order-service 500 error`、`order-service`（裸串，无 `{}` 流选择器）→ **Loki 400**；工具把 httpx 异常原样回抛，模型得不到任何语法提示。模型后续自行修正为 `{service="order-service"} |= "500"` 即不再 400（返回 0 条属时序/种子数据问题）。
