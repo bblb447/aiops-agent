@@ -16,6 +16,7 @@
 - **服务负载展示（workload）**：`GET /api/v1/workload/{service}` + Agent 工具 `query_workload` 复用同一 `WorkloadService`，返回服务 QPS/错误率/CPU/内存汇总（Prometheus）。
 - **结构化 RCA（V1.5）**：`RCAResult`（`verdict / root_cause / confidence / evidence[] / hypotheses[]`）写入 `Incident.rca`，`rca_source` 记录来源。混合收尾：首选 `submit_rca_result` 工具，兜底为 `final_answer` 中 `<rca_result>` 标签的严格 JSON，两条通道共用同一 schema 校验（`rca_source` = tool / final_answer）。无有效 RCA 不得 `ROOT_CAUSE_FOUND`；失败归因 `failure_code`（六码：NO_SUBMISSION / MISSING_EVIDENCE / LOW_CONFIDENCE / LLM_ERROR / TOOL_ERROR / MAX_STEPS）。真实模型冒烟验证见 `scripts/smoke_real_llm.py`。
 - **调查结果语义（V1.7）**：`status`（生命周期/处置）与 `verdict`（对世界的判断）拆成两轴。`verdict ∈ {ROOT_CAUSE_FOUND, NO_ANOMALY, INCONCLUSIVE}`（不含 ESCALATED）：找到根因→ROOT_CAUSE_FOUND；告警被证伪/无异常→NO_ANOMALY 直关 `RESOLVED`；证据不足可显式提交 INCONCLUSIVE（查过但不足以定论，属合法结论）。`root_cause`/`confidence` 业务必填由 verdict 条件约束，legacy（无 verdict + root_cause 非空）自动按 ROOT_CAUSE_FOUND 兼容。Tool/Final 双通道共享 RCAResult 中央校验。
+- **证据来源归属（F3）**：`EvidenceItem.source` 受域契约 `EvidenceSource` 约束（`prometheus` / `loki` / `cmdb` / `runbook`），大小写与首尾空白自动归一，语义变体（如 `query_workload`、`Prometheus Server`）被拒并返回可读错误。合法值集合**唯一来源**于 `app/incident/sources.py`，工具以 `source_type` 声明归属，agent prompt 与工具描述中的允许值均由该枚举派生。**Provenance 强度为 B（词表合规），不是 C（调用级真归属）**：本阶段只保证提交的 `source` 落在词表内，不证明某条 evidence 真的来自某次特定工具调用；`call_id` 真归属见 design.md §48.2 Future Evolution。`failure_code` 六码不变。
 
 ## 技术栈
 
@@ -56,7 +57,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 290 passed
+python -m pytest   # 328 passed
 ```
 
 L1 真实后端集成测试（需先运行 `tests/integration/scripts/setup_integration.ps1` 下载二进制）：

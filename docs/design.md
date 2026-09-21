@@ -2578,7 +2578,7 @@ A（负向控制）判据由"最终 INSUFFICIENT_EVIDENCE"升级为：预算内 
 | B 正向多源 | 显式 `verdict=INCONCLUSIVE` / `status=INSUFFICIENT_EVIDENCE`（rca 5 evidence）/ budget **7/4 FAIL** | 真实异常(error_rate≈20%)但 Loki 400+error_rate 时序空→诚实认怂；新显式 INCONCLUSIVE 通道端到端可用。超预算=既有 F4 |
 | C Hybrid | 显式 `verdict=INCONCLUSIVE` / tool 通道（非 final 兜底）/ budget 4/4 PASS | 模型偏好 submit>final（场景前提非确定）；且实证校验重试：首次 confidence 字符串被拒→改数值重试成功 |
 
-三个 verdict 均被真实模型触达。遗留待议项（非 V1.7 Phase-1 范围）：evidence `source` 字段模型乱填（F3，观察到 `query_workload(order-service)`/`CountingMonitoring.query_workload`/`query_metric/Prometheus` 等变体）→ Provenance 阶段动机；预算偶超（F4）→ 收敛/Hard Budget 阶段。
+三个 verdict 均被真实模型触达。遗留待议项（非 V1.7 Phase-1 范围）：evidence `source` 字段模型乱填（F3，观察到 `query_workload(order-service)`/`CountingMonitoring.query_workload`/`query_metric/Prometheus` 等变体）→ **已收敛：F3 Provenance 阶段完成（域词表 + 字段收敛 + 工具归属声明 + prompt 由枚举渲染），见 §48.2**；预算偶超（F4）→ 收敛/Hard Budget 阶段。
 
 ---
 
@@ -2619,23 +2619,25 @@ V2 能力扩展（执行闭环）
 
 第 1、2 项相互独立，可并行；3、4、5 严格串行。
 
-## 48.2 F3 Provenance（证据来源归属）
+## 48.2 F3 Provenance（证据来源归属）—— 已实现（2026-09-21）
 
-**现状（2026-09-09 L3 实测）**：`EvidenceItem.source` 是自由字符串，模型按上下文里出现过的标识符拼装，观测到 `query_workload(order-service)` / `query_metric/Prometheus` / `search_logs/Loki` 等 `<方法名>/<类名>` 形态变体。其中 `_CountingMonitoring` 是 **L3 插桩子类**的类名——说明模型读的是**工具 schema 里的标识符**，而非数据源语义。
-
-**根因**：`source` 无词表、无归属绑定，模型没有任何"来源应该是什么"的约定可依据；产品侧也不校验。
-
-**目标**：证据来源可归属、可校验，且不由模型自由发挥。
-
-**方案方向（spec 阶段定稿，候选）**：① **结构化绑定**——工具声明自己的 `source_type`，RCA 提交时不接受模型自由文本，由产品按工具归属回填；② **规范化词表**——保留自由文本但引入 `source_type`/`observation_type` 双轴 + 校验/归一，保留模型表达力。
-
-**改动面**：`app/incident/model.py`（EvidenceItem）、`app/agent/submit_tool.py`、`app/tools/*`（工具声明的归属元数据）、prompt。
-
-**Exit Criteria**：
-
-1. L3-B/C 场景下 evidence `source` 全部落在允许集合内，**不再出现类名/方法名形态**；
-2. L0 覆盖新的归属校验与非法值拒绝；
-3. legacy 兼容路径（旧 RCA 结构）不回归，L2 保持零改动通过。
+**实现结论**：`EvidenceSource` 为唯一来源词表（域拥有）；工具以 `source_type` 声明归属；
+`EvidenceItem.source` 收紧为枚举并在 `mode="before"` 做 strip + lower 归一（容忍大小写/空白，
+不容忍语义变体）；非法值经既有 `rca_validation_code` 归 `MISSING_EVIDENCE`，未新增 failure_code；
+工具描述不再泄漏 Python 类名，prompt 允许值由枚举动态渲染。
+**遗留项已收敛**：观察到的 `query_workload(order-service)` / `CountingMonitoring.query_workload`
+等变体在类型层被拒，模型据可读错误重试。
+**Provenance 强度边界（本阶段为 B，不是 C）**：F3 只保证提交的 `source` 落在域词表内，
+**不证明**某条 evidence 真的来自某次特定工具调用。字段名 `source_type` 表达的是"工具声明的归属"，
+不是"调用级真归属"——不得据此推断更强的溯源保证。
+**失败码不变**：F3 未新增 `failure_code`，六码（NO_SUBMISSION / MISSING_EVIDENCE / LOW_CONFIDENCE /
+LLM_ERROR / TOOL_ERROR / MAX_STEPS）维持不变，既有归类 precedence 不变。已知且已接受的语义边界：
+source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `mode="after"` 模型校验器，
+故"source 非法 + confidence 缺失"归 `MISSING_EVIDENCE` 而非 `LOW_CONFIDENCE`（两层均有专门用例钉住）。
+**验证状态**：L0 328 passed；L1 14 passed；L2 3 passed（零改动，spec §7.3 冻结验证点成立）；
+真实 DeepSeek 的 source 合规复验（L3）为显式待办，须用户确认后另行执行——代码结构上计数子类继承父类
+`source_type` 而自动合规，但这**不等于**真实模型已被验证。
+**Future Evolution（不在本阶段）**：call-level provenance（`call_id` 真归属）见 F3 spec §11。
 
 ## 48.3 Loki / LogQL Tool Contract（日志工具契约）
 
