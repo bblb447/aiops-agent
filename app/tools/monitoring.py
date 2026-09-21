@@ -1,10 +1,13 @@
 import httpx
 from app.config import Settings
+from app.incident.sources import EvidenceSource
 from app.tools.base import ToolResult
 from app.workload.service import WorkloadService, WorkloadUnavailable, WorkloadQueryError
 
 
 class MonitoringTool:
+    # F3：本工具的证据归属数据源（spec §3.2）。
+    source_type = EvidenceSource.PROMETHEUS
     # 显式暴露白名单：只包装这些方法，避免 dir() 把 refresh_cache 等辅助方法暴露给 Agent。
     exposed_methods = ["query_metric", "query_metric_range", "query_workload"]
 

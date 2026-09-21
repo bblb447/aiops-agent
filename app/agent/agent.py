@@ -93,13 +93,17 @@ class _ToolAdapter(SmolTool):
         self._target = target
         self._method = method
         self.name = method.__name__
-        self.description = (
-            inspect.getdoc(method)
-            or f"调用 {type(target).__name__}.{self.name} 收集证据"
-        )
         self.inputs = self._build_inputs(method)
         self.output_type = "string"
         self.is_initialized = False
+        # F3（spec §5.1）：兜底描述不得泄漏 Python 类名；来源指引恒定附加，
+        # 不依赖是否有 docstring（日后补 docstring 时指引不会静默消失）。
+        base = inspect.getdoc(method) or f"调用 {self.name} 收集证据"
+        source_type = getattr(target, "source_type", None)
+        if source_type is not None:
+            base = (f"{base}\n证据来源(source)：{source_type.value}"
+                    f"（引用本工具的证据，source 必须填 \"{source_type.value}\"）")
+        self.description = base
         super().__init__()
 
     @staticmethod

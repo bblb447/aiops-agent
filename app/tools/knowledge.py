@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from app.config import Settings
+from app.incident.sources import EvidenceSource
 from app.knowledge.chunker import chunk_markdown
 from app.knowledge.embeddings import FastEmbedTextEmbedding
 from app.knowledge.retriever import RunbookRetriever
@@ -14,6 +15,8 @@ CHROMA_DIR = Path(__file__).resolve().parent.parent.parent / ".data" / "chroma"
 
 
 class KnowledgeTool:
+    # F3：本工具的证据归属数据源（spec §3.2）。
+    source_type = EvidenceSource.RUNBOOK
     exposed_methods = ["search_runbook"]
 
     def __init__(self, settings: Settings) -> None:

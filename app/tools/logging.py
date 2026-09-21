@@ -2,10 +2,13 @@ import time
 
 import httpx
 from app.config import Settings
+from app.incident.sources import EvidenceSource
 from app.tools.base import ToolResult
 
 
 class LoggingTool:
+    # F3：本工具的证据归属数据源（spec §3.2）。
+    source_type = EvidenceSource.LOKI
     exposed_methods = ["search_logs"]
 
     def __init__(self, settings: Settings) -> None:

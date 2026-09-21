@@ -2,10 +2,13 @@ from urllib.parse import quote
 
 import httpx
 from app.config import Settings
+from app.incident.sources import EvidenceSource
 from app.tools.base import ToolResult
 
 
 class CMDBTool:
+    # F3：本工具的证据归属数据源（spec §3.2）。
+    source_type = EvidenceSource.CMDB
     exposed_methods = ["get_service"]
 
     def __init__(self, settings: Settings) -> None:
