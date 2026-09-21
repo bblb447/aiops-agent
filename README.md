@@ -83,7 +83,7 @@ PYTHONIOENCODING=utf-8; python scripts/l3_real_backend.py --expect convergence
 python tests/integration/backend.py down
 ```
 
-真实 L3 已验证“告警被证伪”可经 `verdict=NO_ANOMALY / status=RESOLVED` 正确表达（V1.7 §47）；证据来源归属（`source` 字段模型乱填）与收敛稳定性（预算偶超）为后续 Provenance / 收敛待议项，详见 `docs/design.md` §46（L3）。
+真实 L3 已验证“告警被证伪”可经 `verdict=NO_ANOMALY / status=RESOLVED` 正确表达（V1.7 §47）；证据来源归属（`source` 字段模型乱填）已收敛于 F3 Provenance（见 `docs/design.md` §48.2）；收敛稳定性（预算偶超）仍为后续收敛 / Hard Budget 待议项，详见 `docs/design.md` §46（L3）。
 
 详见 `tests/integration/README.md` 与 `docs/design.md` §44（L1）/§45（L2）/§46（L3）。
 
