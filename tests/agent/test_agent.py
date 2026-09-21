@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from app.config import Settings
 from app.incident.service import IncidentService
 from app.incident.model import IncidentStatus as S
@@ -593,3 +595,21 @@ def test_investigate_injects_allowed_sources_from_enum(monkeypatch, tmp_path):
 
     for s in EvidenceSource:
         assert s.value in captured["prompt"]
+
+
+# F3 spec §5.2：强制否定句的回归保护（用户 2026-09-21 硬要求该句存在）
+# 断言的是语义子串而非逐字 golden：任一 prompt 表面删掉该否定句即失败。
+# 注：「不是调用表达式」在原文中并非连续子串（原文为「也不是 query_metric(...)
+# 这类调用表达式」），故第三项取概念本身，保证改动示例工具名不会误伤。
+
+REQUIRED_NEGATIVE_CLAUSES = ["不是查询方法名", "不是 Python 类名", "这类调用表达式"]
+
+
+@pytest.mark.parametrize("clause", REQUIRED_NEGATIVE_CLAUSES)
+def test_prompt_surfaces_state_the_negative_source_clause(clause):
+    # 两个 prompt 表面都必须传达"source 是数据源名，不是方法名/类名/调用表达式"。
+    # 三个关键短语均不含占位符，故断言模板原文即等价于断言渲染后的 prompt。
+    from app.agent.agent import _DEFAULT_PROMPT, _load_prompt_template
+
+    assert clause in _DEFAULT_PROMPT
+    assert clause in _load_prompt_template()
