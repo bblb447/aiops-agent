@@ -2634,9 +2634,20 @@ V2 能力扩展（执行闭环）
 LLM_ERROR / TOOL_ERROR / MAX_STEPS）维持不变，既有归类 precedence 不变。已知且已接受的语义边界：
 source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `mode="after"` 模型校验器，
 故"source 非法 + confidence 缺失"归 `MISSING_EVIDENCE` 而非 `LOW_CONFIDENCE`（两层均有专门用例钉住）。
-**验证状态**：L0 328 passed；L1 14 passed；L2 3 passed（零改动，spec §7.3 冻结验证点成立）；
-真实 DeepSeek 的 source 合规复验（L3）为显式待办，须用户确认后另行执行——代码结构上计数子类继承父类
-`source_type` 而自动合规，但这**不等于**真实模型已被验证。
+**验证状态**：L0 **PASS**（328 passed）；L1 **PASS**（14 passed）；L2 **PASS**（3 passed，零改动，spec §7.3 冻结验证点成立）。
+
+**L3 真实 DeepSeek source 正向合规复验：PASS**（2026-09-21，B/C 场景；观测存
+`docs/l3-observations/f3-verify-2026-09-21.txt`）：`RCAResult.evidence[*].source` 穷举 **21/21** 落在
+`prometheus` / `loki` / `runbook`；source 位置污染形态命中 **0**；原 V1.7 观测到的
+`CountingMonitoring` / `query_metric/Prometheus` / `search_logs/Loki` 本次均为 **0 次**出现。
+**该次运行未触发非法 source 的拒绝/重试路径**（两处校验失败分别源于 evidence 非对象形态与 confidence
+类型，均与 source 无关）；拒绝路径由 **L0** 覆盖。
+
+**F3 overall：CLOSED**（2026-09-21）。
+
+**CLOSED 的语义**：宣布 **F3 Provenance 契约**及其 **L3 正向合规性**已验证；**不声称**所有拒绝/异常路径已被真实模型覆盖。
+
+**已知遗留（非 F3 缺陷）**：B/C `scene_success=FAIL` 系 read budget 超限（5/4、7/4），属 **F4 Hard Budget**，与本阶段无关。
 **Future Evolution（不在本阶段）**：call-level provenance（`call_id` 真归属）见 F3 spec §11。
 
 **实现 Exit Criteria（逐项状态）**：
@@ -2652,12 +2663,12 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 - L0：**PASS**（328 passed）
 - L1：**PASS**（14 passed）
 - L2：**PASS**（3 passed，零改动）
-- L3 真实 DeepSeek source 合规复验：**PENDING**（须用户确认后执行）
+- L3 真实 DeepSeek source 正向合规复验：**PASS**（2026-09-21，B/C 场景）
 
 **结论**：
 - F3 implementation = **COMPLETE**
-- F3 real-model verification = **PENDING**
-- F3 overall CLOSED = **待 L3 复验后宣布**（不在此节点宣布 CLOSED）
+- F3 real-model verification = **PASS**（L3 正向合规，2026-09-21）
+- F3 overall CLOSED = **CLOSED**（2026-09-21；语义见上）
 
 ## 48.3 Loki / LogQL Tool Contract（日志工具契约）
 
