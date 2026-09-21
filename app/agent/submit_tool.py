@@ -53,7 +53,8 @@ class SubmitRCATool:
           - root_cause (string, 可选): 根因；仅 ROOT_CAUSE_FOUND 需要非空。
           - confidence (number, 可选): ROOT_CAUSE_FOUND/NO_ANOMALY 必填 0~1；INCONCLUSIVE 可选。
           - evidence (array): 至少 1 条；每条为对象 {"source": "数据源", "fact": "证据事实"}，
-            source/fact 不能为空。
+            source/fact 不能为空。source 表示「这条证据由哪个数据源提供」（不是哪次查询、
+            不是工具名），取值必须是工具描述与本提示中列出的数据源之一。
           - hypotheses (array, 可选): 候选假设列表
           - recommendations (array, 可选): 处置建议列表
           - summary (string, 可选): 一句话总结

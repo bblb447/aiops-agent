@@ -23,6 +23,7 @@ from app.incident.codes import (
 )
 from app.incident.service import IncidentService
 from app.incident.model import IncidentStatus as S, InvestigationVerdict
+from app.incident.sources import EvidenceSource
 from app.incident.state import transition
 from app.llm.base import LLMProvider
 from app.llm.provider import LiteLLMProvider
@@ -47,7 +48,10 @@ _DEFAULT_PROMPT = (
     "这是合法结论而非失败。"
     "JSON 字段：verdict 为上述三值之一；root_cause 为字符串（NO_ANOMALY/INCONCLUSIVE 时省略）；"
     "confidence 为 0 到 1 之间的数字（ROOT_CAUSE_FOUND/NO_ANOMALY 必填，INCONCLUSIVE 可省略）；"
-    "evidence 为数组且至少 1 条，每条必须是含 source（字符串，数据源）与 fact（字符串，证据事实）两个字段的对象；"
+    "evidence 为数组且至少 1 条，每条必须是含 source 与 fact 两个字段的对象，且两者不能为空；"
+    "source 表示「这条证据由哪个数据源提供」——是数据源名，不是哪次查询、不是工具名、"
+    "不是查询方法名、不是 Python 类名，也不是 query_metric(...) 这类调用表达式；"
+    "只能是下列值之一：{sources}；fact 为该来源实际观察到的事实。"
     "hypotheses 与 recommendations 为字符串数组；summary 可选。"
     "注意：evidence 不要用纯字符串数组；hypotheses 不要用对象数组。"
 )
@@ -214,6 +218,7 @@ def investigate(settings: Settings, svc: IncidentService,
         tool_names=tool_names,
         context=_build_context(inc),
         max_read_tools=settings.agent_max_read_tools,
+        sources=" / ".join(s.value for s in EvidenceSource),
     )
 
     conclusion: str | None = None

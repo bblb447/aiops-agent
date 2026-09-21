@@ -556,3 +556,40 @@ def test_diagnose_prompt_contains_verdict_instructions():
     txt = PROMPT_FILE.read_text(encoding="utf-8")
     assert "ROOT_CAUSE_FOUND" in txt and "NO_ANOMALY" in txt and "INCONCLUSIVE" in txt
     assert "root_cause" in txt
+
+
+# ===== F3 Evidence Provenance：prompt 来源词表（spec §5.2 / §6）=====
+
+
+def test_default_prompt_has_sources_placeholder():
+    from app.agent.agent import _DEFAULT_PROMPT
+    assert "{sources}" in _DEFAULT_PROMPT
+
+
+def test_diagnose_template_has_sources_placeholder():
+    from app.agent.agent import PROMPT_FILE
+    assert "{sources}" in PROMPT_FILE.read_text(encoding="utf-8")
+
+
+def test_investigate_injects_allowed_sources_from_enum(monkeypatch, tmp_path):
+    # §6 单一事实源：prompt 中的允许值必须等于 EvidenceSource 全部成员。
+    from app.incident.sources import EvidenceSource
+
+    tpl = tmp_path / "prompt.txt"
+    tpl.write_text("允许来源: {sources}", encoding="utf-8")
+    monkeypatch.setattr("app.agent.agent.PROMPT_FILE", tpl)
+
+    captured = {}
+
+    class _CaptureAgent(_FakeAgent):
+        def run(self, prompt, return_full_result=True):
+            captured["prompt"] = prompt
+            return _Run(output="", state="success")
+
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service")
+    monkeypatch.setattr("app.agent.agent.build_agent", lambda *a, **k: _CaptureAgent())
+    investigate(Settings(), svc, inc.incident_id, [])
+
+    for s in EvidenceSource:
+        assert s.value in captured["prompt"]

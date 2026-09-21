@@ -15,5 +15,5 @@
     这是合法结论，不是失败。
 两者 JSON 字段一致：verdict 为上述三值之一；root_cause 为字符串（NO_ANOMALY/INCONCLUSIVE 时省略）；
 confidence 为 0 到 1 之间的数字（ROOT_CAUSE_FOUND/NO_ANOMALY 必填，INCONCLUSIVE 可省略）；
-evidence 为数组且至少 1 条，每条必须是含 source（字符串，数据源）与 fact（字符串，证据事实）两个字段的对象，且两者不能为空；
+evidence 为数组且至少 1 条，每条必须是含 source 与 fact 两个字段的对象，且两者不能为空；source 表示「这条证据由哪个数据源提供」——是数据源名，不是哪次查询、不是工具名、不是查询方法名、不是 Python 类名，也不是 query_metric(...) 这类调用表达式；只能是下列值之一：{sources}；fact 为该来源实际观察到的事实。
 hypotheses 与 recommendations 为字符串数组；summary 为可选字符串。注意：evidence 不要用纯字符串数组；hypotheses 不要用对象数组。
