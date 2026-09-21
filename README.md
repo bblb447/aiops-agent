@@ -111,7 +111,7 @@ app/
 prompts/         Agent 诊断 prompt 模板
 runbooks/        Runbook 知识（RAG 数据源）
 tests/           pytest 全量测试
-docs/design.md   完整设计文档（47 章，V1.5 结构化 RCA / V1.6 收敛 / 1.3 Workload / V1.7 调查结果语义 §47）
+docs/design.md   完整设计文档（48 章，V1.5 结构化 RCA / V1.6 收敛 / 1.3 Workload / V1.7 调查结果语义 §47 / V1 收口与 V2 路线图 §48）
 ```
 
 ## License

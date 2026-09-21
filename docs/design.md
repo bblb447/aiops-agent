@@ -1,6 +1,6 @@
 # 基于 smolagents 的 AIOps Agent 系统设计文档
 
-**文档版本：** V1.5（V1.5 结构化 RCA 已实现见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章；Workload 服务负载见第 43 章；L1 Real Backend Integration 见第 44 章；L2 Scripted Agent + Real Backend 见第 45 章；L3 Real LLM + Real Backend 见第 46 章）
+**文档版本：** V1.7（V1.5 结构化 RCA 见第 41 章；V1.6 Investigation Convergence 实验定稿见第 42 章；Workload 服务负载见第 43 章；L1 Real Backend Integration 见第 44 章；L2 Scripted Agent + Real Backend 见第 45 章；L3 Real LLM + Real Backend 见第 46 章；V1.7 调查结果语义见第 47 章；V1 收口与 V2 路线图见第 48 章）
 **项目名称：** AIOps Agent
 **核心框架：** smolagents
 **文档类型：** 系统设计文档
@@ -2579,3 +2579,146 @@ A（负向控制）判据由"最终 INSUFFICIENT_EVIDENCE"升级为：预算内 
 | C Hybrid | 显式 `verdict=INCONCLUSIVE` / tool 通道（非 final 兜底）/ budget 4/4 PASS | 模型偏好 submit>final（场景前提非确定）；且实证校验重试：首次 confidence 字符串被拒→改数值重试成功 |
 
 三个 verdict 均被真实模型触达。遗留待议项（非 V1.7 Phase-1 范围）：evidence `source` 字段模型乱填（F3，观察到 `query_workload(order-service)`/`CountingMonitoring.query_workload`/`query_metric/Prometheus` 等变体）→ Provenance 阶段动机；预算偶超（F4）→ 收敛/Hard Budget 阶段。
+
+---
+
+# 48. V1 收口与 V2 路线图（2026-09-21 定）
+
+本章不是新能力设计，而是把 V1.7 之后的演进顺序、阶段边界与完成判据固定下来，作为后续每个阶段 spec / plan 的既定依据。**本章不含实现细节，各阶段的技术方案由该阶段自己的 spec 承载。**
+
+## 48.1 总体路线
+
+V1.7 已收口"调查结果语义"（`status` / `verdict` / `rca` / `failure_code` 四轴）。剩余工作分三类：
+
+```text
+契约收口类（V1 遗留）  F3 证据来源归属 / Loki 日志工具契约 / F4 预算强制
+工程保障类             Evaluation / Regression（行为可量化、可对照）
+能力扩展类（V2）       K8s / Action Gateway / Approval / Audit 闭环
+```
+
+**顺序原则：先把 V1 主链（Incident → Agent → Tools → Evidence → RCAResult）的契约稳定下来，再在稳定的契约上叠加 V2 执行闭环。** 契约未稳就堆 V2，会把工具契约的返工成本放大到执行链上。
+
+```text
+V1 收口（契约稳定，串行）
+  F3 Provenance ──→ Loki LogQL Contract ──→ F4 Hard Budget ──→ Evaluation / Regression
+  证据来源可归属      日志源真实可用            预算可强制          行为可量化回归
+                                                                        │
+                                                                        ▼
+V2 能力扩展（执行闭环）
+  K8s Tool ──→ Action Gateway ──→ Approval ──→ Audit
+  Detect → Diagnose → Recommend → Approve → Execute → Verify → Audit
+```
+
+| 序 | 阶段 | 解决的问题 | 规模 | 依赖 |
+|---|---|---|---|---|
+| 1 | F3 Provenance | evidence 来源不可信、不由契约约束 | 小～中 | 无（V1.7 遗留） |
+| 2 | Loki / LogQL Tool Contract | L3-B/C 日志源不可用（400） | 小 | 无 |
+| 3 | F4 Hard Budget | 软预算拦不住不确定模型 | 中 | Loki（场景完整后测） |
+| 4 | Evaluation / Regression | 改动缺少量化对照 | 中 | F3 / Loki / F4 定稿后固化 |
+| 5 | V2 K8s / Approval / Audit | 从诊断扩展到执行闭环 | 大 | 前四项完成 |
+
+第 1、2 项相互独立，可并行；3、4、5 严格串行。
+
+## 48.2 F3 Provenance（证据来源归属）
+
+**现状（2026-09-09 L3 实测）**：`EvidenceItem.source` 是自由字符串，模型按上下文里出现过的标识符拼装，观测到 `query_workload(order-service)` / `query_metric/Prometheus` / `search_logs/Loki` 等 `<方法名>/<类名>` 形态变体。其中 `_CountingMonitoring` 是 **L3 插桩子类**的类名——说明模型读的是**工具 schema 里的标识符**，而非数据源语义。
+
+**根因**：`source` 无词表、无归属绑定，模型没有任何"来源应该是什么"的约定可依据；产品侧也不校验。
+
+**目标**：证据来源可归属、可校验，且不由模型自由发挥。
+
+**方案方向（spec 阶段定稿，候选）**：① **结构化绑定**——工具声明自己的 `source_type`，RCA 提交时不接受模型自由文本，由产品按工具归属回填；② **规范化词表**——保留自由文本但引入 `source_type`/`observation_type` 双轴 + 校验/归一，保留模型表达力。
+
+**改动面**：`app/incident/model.py`（EvidenceItem）、`app/agent/submit_tool.py`、`app/tools/*`（工具声明的归属元数据）、prompt。
+
+**Exit Criteria**：
+
+1. L3-B/C 场景下 evidence `source` 全部落在允许集合内，**不再出现类名/方法名形态**；
+2. L0 覆盖新的归属校验与非法值拒绝；
+3. legacy 兼容路径（旧 RCA 结构）不回归，L2 保持零改动通过。
+
+## 48.3 Loki / LogQL Tool Contract（日志工具契约）
+
+**现状（实测）**：`LoggingTool.search_logs(query)` 把模型给的原始串**直接作为 LogQL** 传给 `/loki/api/v1/query_range`（`app/tools/logging.py`）。模型发送 `order-service 500 error`、`order-service`（裸串，无 `{}` 流选择器）→ **Loki 400**；工具把 httpx 异常原样回抛，模型得不到任何语法提示。模型后续自行修正为 `{service="order-service"} |= "500"` 即不再 400（返回 0 条属时序/种子数据问题）。
+
+**根因**：① 工具契约不教 LogQL，参数面无选择器约束；② 错误信息不具指导性。
+
+**目标**：日志源在 L3-B/C 真实可用，让多源诊断的日志支路真正参与证据。
+
+**改动面**：`app/tools/logging.py`（参数面 / 描述 / 错误归一）。**这是 keep 代码复用的唯一落点**——按 `project_keep_reuse.md` 的 A 级参考，仅借鉴 Loki Provider 的 query_range 参数面（direction/since/step/interval）、Basic Auth、X-Scope-OrgID、TLS verify 与统一后端错误处理；**不引入 keep 运行时，不为复用改动 aiops-agent 主架构**。
+
+**Exit Criteria**：
+
+1. L3-B/C 中 `search_logs` 不再出现 400；
+2. 至少一次**真实日志证据**进入 RCA 的 evidence 集合；
+3. L1 日志用例不回归。
+
+## 48.4 F4 Hard Budget（预算强制）
+
+**现状**：`agent_max_read_tools = 4` **只经 prompt 注入**（`app/agent/agent.py`），产品侧无任何强制；L3-B 实测 `7/4` 超预算。收敛 prompt 大多生效但非总能拦住（模型非确定）。
+
+**目标**：预算可强制——模型不配合时由产品兜底，而非仅靠提示。
+
+**方案方向（候选）**：① **工具层计数拦截**——超预算的只读调用直接返回失败结果并提示收尾（复用现有 `ToolResult(success=False)` 降级语义，不 raise）；② **循环观察强制收尾**——在 `investigate` 循环观察只读调用计数，达上限后进入收尾通道。
+
+**改动面**：`app/agent/agent.py`（循环 / 工具装配）、`app/tools/*`（计数位点）、prompt。
+
+**Exit Criteria**：
+
+1. L3 三场景 `budget_compliance` 全 `True`；
+2. **正常场景不多付代价**——原先能在预算内收敛的场景（A/C）不因强制而退化；
+3. L0 覆盖计数与越界行为。
+
+## 48.5 Evaluation / Regression（行为可量化与回归）
+
+**现状（澄清）**：L3 脚本**已经采集**必要观测字段——`read_tool_calls` / `budget` / `budget_compliance` / `submit_attempted` / `rca_source` / `total_steps` / `evidence_sources` / `status` / `rca_valid` / `system_error`。缺口不在采集，而在**这些结果只写进 `docs/l3-observations/*.txt`（untracked，不提交），没有基线、没有跨版本对照**，导致 F3 / Loki / F4 的修复无法量化验证，V2 也无法发现回归。
+
+**目标**：把"手工跑一次看结果"升级为"固定 Scenario Matrix + 可对照基线"。
+
+**要点**：
+
+- **不新建第五层测试金字塔**——L0–L3 分层已定（§44.12）；本项是**把 L3 的观测结果结构化沉淀**（记录格式 + 基线快照 + 对比命令），不是新测试层。
+- **真实模型非确定，基线不能是逐字节回归**。基线应为**不变量断言 + 分布观察**：`budget_compliance`、`verdict` 分布、`evidence_sources` 集合、`rca_source` 通道等。
+- 基线内容须**不含真实 token 原文与 Key**，避免敏感物入仓。
+
+**改动面**：`scripts/l3_real_backend.py`（结构化记录与对比）、场景矩阵定义、基线文件。`app/` 零改动。
+
+**Exit Criteria**：
+
+1. 可对同一 Scenario Matrix 输出"改前 / 改后"结构化差异；
+2. 基线可提交且不含敏感原文；
+3. F3 / Loki / F4 的 Exit Criteria 可用该基线复现验证。
+
+## 48.6 V2 K8s / Approval / Audit（能力扩展）
+
+按 §34 推进，形成执行闭环：
+
+```text
+Detect → Diagnose → Recommend → Approve → Execute → Verify → Audit
+```
+
+**边界与前置**：
+
+- **V1 收口四项完成前不开工 V2**（避免在未稳定的工具契约上叠加执行链）。
+- `§47.3` 已定：**remediation eligibility 必须以 `verdict == ROOT_CAUSE_FOUND` 为资格条件**，不得只看 `status`——`NO_ANOMALY → RESOLVED` 与 `ROOT_CAUSE_FOUND → ROOT_CAUSE_FOUND` 都属"调查完成"，但只有后者有可修复对象。
+- 保持只读/写操作分离（§3.3）与审批前置（§14 C 类）；写操作一律经 Action Gateway + Approval，不直连工具。
+
+## 48.7 阶段依赖与 Exit Criteria 汇总
+
+```text
+F3 Provenance ─┐
+               ├─→ F4 Hard Budget ─→ Evaluation / Regression ─→ V2
+Loki Contract ─┘
+```
+
+| 阶段 | Exit Criteria（可判定） | 验证载体 |
+|---|---|---|
+| F3 Provenance | source 落允许集合、无类名形态、legacy 不回归 | L0 + L3-B/C |
+| Loki Contract | 无 400、真实日志证据入 RCA | L1 + L3-B/C |
+| F4 Hard Budget | 三场景 budget 合规、正常场景不退化 | L0 + L3 |
+| Evaluation | 改前后结构化差异可产出、基线可提交 | L3 harness |
+| V2 | 执行闭环打通、eligibility 以 verdict 为准 | L1/L2 + 新增层 |
+
+**V1 / V2 分界**：V1 = **只读诊断闭环 + 契约稳定**（当前至 §48.5）；V2 = **写操作执行闭环 + 审批审计**（§48.6 起）。V1 收口完成的标志是 48.5 的 Exit Criteria 全部达成。
+
+**保留红线**：真实 LLM 调用（消耗 token / 不可复现）执行前须用户确认；`.env` 与真实 Key 严禁入仓；keep 复用仅限 §48.3 的 A 级局部参考；`app/` 改动须有对应 L0 覆盖。
