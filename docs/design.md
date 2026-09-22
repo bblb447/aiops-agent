@@ -2673,13 +2673,13 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 
 ## 48.3 Loki / LogQL Tool Contract（日志工具契约）—— 已实现（2026-09-21）
 
-**现状（实测）**：`LoggingTool.search_logs(query)` 把模型给的原始串**直接作为 LogQL** 传给 `/loki/api/v1/query_range`（`app/tools/logging.py`）。模型发送 `order-service 500 error`、`order-service`（裸串，无 `{}` 流选择器）→ **Loki 400**；工具把 httpx 异常原样回抛，模型得不到任何语法提示。模型后续自行修正为 `{service="order-service"} |= "500"` 即不再 400（返回 0 条属时序/种子数据问题）。
+**现状（#11 落地前实测；保留原文作为问题背景，勿读作当前状态）**：`LoggingTool.search_logs(query)` 把模型给的原始串**直接作为 LogQL** 传给 `/loki/api/v1/query_range`（`app/tools/logging.py`）。模型发送 `order-service 500 error`、`order-service`（裸串，无 `{}` 流选择器）→ **Loki 400**；工具把 httpx 异常原样回抛，模型得不到任何语法提示。模型后续自行修正为 `{service="order-service"} |= "500"` 即不再 400（返回 0 条属时序/种子数据问题）。
 
 **根因**：① 工具契约不教 LogQL，参数面无选择器约束；② 错误信息不具指导性。
 
 **目标**：日志源在 L3-B/C 真实可用，让多源诊断的日志支路真正参与证据。
 
-**改动面**：`app/tools/logging.py`（参数面 / 描述 / 错误归一）。**这是 keep 代码复用的唯一落点**——按 `project_keep_reuse.md` 的 A 级参考，仅借鉴 Loki Provider 的 query_range 参数面（direction/since/step/interval）、Basic Auth、X-Scope-OrgID、TLS verify 与统一后端错误处理；**不引入 keep 运行时，不为复用改动 aiops-agent 主架构**。
+**改动面**：`app/tools/logging.py`（参数面 / 描述 / 错误归一）。此前的复用评估把 keep 的 Loki Provider 列为 A 级参考（query_range 参数面 direction/since/step/interval、Basic Auth、X-Scope-OrgID、TLS verify、统一后端错误处理），但该评估是非仓库的本地调查产物；本阶段**实际吸收的 keep 运行时代码为 0 行**——spec §12 明确 keep 复用"仅在出现真实需求时"进行，而本阶段无此需求。**不引入 keep 运行时，不为复用改动 aiops-agent 主架构。**
 
 **Exit Criteria**：
 
@@ -2687,7 +2687,7 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 2. 至少一次**真实日志证据**进入 RCA 的 evidence 集合；
 3. L1 日志用例不回归。
 
-**实现结论**：`Settings.loki_label_keys` 是 label schema 的唯一事实源；`LoggingTool` 由它合成自身契约文案（恒定段恒呈现 + 配置段仅在有声明时附加），经 `_ToolAdapter` 恒定附加进 tool description；`prompt` 不承载该契约。Loki **拒绝查询时**（HTTP 4xx/5xx）透传状态码与原始响应体，截断 500 字符；网络错误 / 超时 / 非 JSON 仍走原有通用消息。工具不做解析、分类、改写或重试。
+**实现结论**：`Settings.loki_label_keys` 是 label schema 的唯一事实源；`LoggingTool` 由它合成自身契约文案（恒定段恒呈现 + 配置段仅在有声明时附加），经 `_ToolAdapter` 恒定附加进 tool description；`prompt` 不承载该契约。Loki **返回错误时**（HTTP 4xx/5xx）透传状态码与原始响应体，截断 500 字符；网络错误 / 超时仍走原有通用消息。**200 + 非 JSON body 不在此列**：`resp.json()` 位于 `app/tools/logging.py` 的 `try` 之外，会抛 `JSONDecodeError` 逸出工具（不返回 `ToolResult`），系 #11 之前的既存缺陷，已记入本阶段 spec §13 开放项（F6，非 #11 范围）。工具不做解析、分类、改写或重试。
 
 **关键边界（不得含糊）**：
 - **契约只由 tool description 承载**（`Tool owns semantics；Adapter owns exposure`）；空配置时描述中**不得出现任何 deployment label 假设**（尤其不得内置 `app`）。
