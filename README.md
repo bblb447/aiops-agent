@@ -58,7 +58,7 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 349 passed
+python -m pytest   # 354 passed
 ```
 
 L1 真实后端集成测试（需先运行 `tests/integration/scripts/setup_integration.ps1` 下载二进制）：
