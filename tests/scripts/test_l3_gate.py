@@ -5,6 +5,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.l3_real_backend import (  # noqa: E402
     a_no_false_positive_cpu,
+    _LOKI_CALLS,
+    _loki_log_lines,
+    _record_loki_call,
     budget_compliance,
     build_trace,
     classify_loki_failure,
@@ -220,15 +223,16 @@ def test_classify_loki_failure():
         loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 2}],
         evidence_sources={"prometheus"})
     ) == "F4_obtained_but_not_submitted"
+    # F5 已废除（spec §6 冻结）：超预算但 contract 已满足 → 不是 failure class。
     assert classify_loki_failure(_loki_obs(
         loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 2}],
         evidence_sources={"loki"}, budget_compliance=False)
-    ) == "F5_budget_exhausted"
-    # 全满足 → none。
+    ) is None
+    # 全满足 → None。
     assert classify_loki_failure(_loki_obs(
         loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 2}],
         evidence_sources={"loki"})
-    ) == "none"
+    ) is None
 
 
 def test_evidence_correlation_never_fails_and_ignores_non_loki():
@@ -358,3 +362,96 @@ def test_explicit_selection_includes_loki_contract():
         == ["error_spike_multisource"]
     # 对 L 只认精确名：`loki` 子串不得命中它。
     assert [s["name"] for s in select_scenarios(_scenes(), ["loki"], [])] == []
+
+
+def test_loki_log_lines_extracts_streams_and_tolerates_malformed():
+    data = {"data": {"resultType": "streams", "result": [
+        {"stream": {"app": "order-service"},
+         "values": [["1700000000000000000", "HTTP 500 Internal Server Error"],
+                    ["1700000000000000001", "order-service failed status=500"]]},
+        {"stream": {"app": "order-service"}, "values": [["1700000000000000002", "boom"]]},
+    ]}}
+    assert _loki_log_lines(data) == ["HTTP 500 Internal Server Error",
+                                     "order-service failed status=500", "boom"]
+    # 空结果 / 非法结构 / None 一律返回 []，不抛异常。
+    assert _loki_log_lines({"data": {"result": []}}) == []
+    assert _loki_log_lines({}) == []
+    assert _loki_log_lines(None) == []
+    assert _loki_log_lines({"data": {"result": [{"values": None}]}}) == []
+
+
+def test_record_loki_call_parses_status_and_body_from_error_contract():
+    # spec §6：F2 必须记录 query / HTTP status / error body。status 从已冻结的错误契约解析。
+    _LOKI_CALLS.clear()
+
+    class _R:
+        pass
+
+    r = _R(); r.success = False; r.data = None
+    r.error = "Loki 返回错误（HTTP 400）：parse error at line 1, col 1: syntax error"
+    _record_loki_call("order-service 500 error", r)
+    rec = _LOKI_CALLS[-1]
+    assert rec["query"] == "order-service 500 error"
+    assert rec["status"] == 400
+    assert rec["success"] is False
+    assert "parse error" in rec["error"]
+    assert rec["result_count"] == 0 and rec["logs"] == []
+
+    r5 = _R(); r5.success = False; r5.data = None
+    r5.error = "Loki 返回错误（HTTP 503）：too many outstanding requests"
+    _record_loki_call("q", r5)
+    assert _LOKI_CALLS[-1]["status"] == 503
+
+    # 非 HTTP 错误（网络）→ status 保持 None，不抛异常。
+    rn = _R(); rn.success = False; rn.data = None
+    rn.error = "Loki 查询失败: ConnectError: connection refused"
+    _record_loki_call("q", rn)
+    assert _LOKI_CALLS[-1]["status"] is None
+
+
+def test_merge_tool_calls_unbalanced_inputs():
+    # loki_calls 多于 search_logs → 多余的不会凭空插进 tool_calls（仍保留在 loki 段）。
+    merged = merge_tool_calls(["search_logs"], [{"query": "a"}, {"query": "b"}])
+    assert [m["tool"] for m in merged] == ["search_logs"]
+    assert merged[0]["query"] == "a"
+    # search_logs 多于 loki_calls → 缺记录的只留 {"tool": "search_logs"}，不抛异常。
+    merged2 = merge_tool_calls(["search_logs", "search_logs"], [{"query": "a"}])
+    assert [m["tool"] for m in merged2] == ["search_logs", "search_logs"]
+    assert merged2[1] == {"tool": "search_logs"}
+
+
+def test_no_f5_and_budget_is_a_separate_observation():
+    # 四条 invariant 全满足 + 超预算 → 不是 failure class；budget 由独立字段承载。
+    obs = _loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 2}],
+        evidence_sources={"loki"}, budget_compliance=False)
+    assert loki_contract_success(obs)[0] is True
+    assert classify_loki_failure(obs) is None
+    # 未满足 invariant 时才返回 F1–F4。
+    assert classify_loki_failure(_loki_obs()) == "F2_no_loki_call"
+    assert classify_loki_failure(_loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 0}])
+    ) == "F3_valid_query_empty_result"
+
+
+def test_gate_and_classifier_share_one_loki_call_set():
+    # 失败调用带 result_count>0（构造出的不可达形态）时，gate 与 classifier 必须一致。
+    obs = _loki_obs(
+        loki_calls=[{"query": "bad", "success": False, "result_count": 5}],
+        evidence_sources={"loki"})
+    assert loki_contract_success(obs)[0] is False          # L3-2：无成功调用
+    assert classify_loki_failure(obs) == "F2_invalid_logql_only"
+
+
+def test_legacy_tool_and_fallback_gates_exclude_loki_contract():
+    def rec(name, rca_source=None, sa=None, lc=True):
+        return {"name": name, "success": True, "rca_source": rca_source,
+                "submit_attempted": sa, "budget_compliance": True,
+                "loki_contract_ok": lc}
+
+    # 一条失败的 real_loki_contract 记录不得影响 tool / fallback 两个既有分支。
+    bad_lk = rec("real_loki_contract", lc=False, rca_source=None, sa=True)
+    ok_b = rec("error_spike_multisource", rca_source="tool", sa=False)
+    ok_c = rec("hybrid_fallback_observation", rca_source="final_answer", sa=False)
+    assert evaluate_expect({"tool"}, [ok_b, ok_c, bad_lk]) is True
+    assert evaluate_expect({"fallback"}, [ok_c, bad_lk]) is True

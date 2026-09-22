@@ -5,6 +5,9 @@
     PYTHONIOENCODING=utf-8 python scripts/l3_real_backend.py [--expect ...] [scene...]
     python tests/integration/backend.py down
 
+    --trace-out PATH：额外写结构化 JSON trace（默认不写）。
+    exit code 追加：preflight(L3-1) 失败=4。
+
 判定纯函数在本文件顶部（可被 tests/scripts/test_l3_gate.py 作 L0 单测）；
 真实 LLM 的 run 层（Task 2）与报告/main（Task 3）在本函数后追加。
 exit code：缺 .env LLM key=2；backend 不可达=3；默认只观测=0（除非未捕获异常/系统错误）；
@@ -170,11 +173,16 @@ def loki_preflight_ok(description: str, label_keys) -> tuple[bool, str]:
     return True, "preflight ok"
 
 
+def _successful_loki_calls(obs: dict) -> list[dict]:
+    """Loki 观察集合的唯一事实源：仅成功（被 Loki 接受）的调用。
+    gate 与 classifier 必须共用它，不得各自重新解释 obs['loki_calls']（spec §6）。"""
+    return [c for c in (obs.get("loki_calls") or []) if c.get("success")]
+
+
 def loki_contract_success(obs: dict) -> tuple[bool, str]:
     """#11 L3 gate（spec §5.2）：只判三条确定性事实。
     预算 / system_error / 模型结论 / 调用顺序 / 调用次数一律不参与 —— 它们是 observation（§5.1）。"""
-    calls = obs.get("loki_calls") or []
-    ok = [c for c in calls if c.get("success")]
+    ok = _successful_loki_calls(obs)
     if not ok:
         return False, "L3-2: no successful search_logs call"
     if not any((c.get("result_count") or 0) > 0 for c in ok):
@@ -184,23 +192,25 @@ def loki_contract_success(obs: dict) -> tuple[bool, str]:
     return True, "loki contract ok"
 
 
-def classify_loki_failure(obs: dict) -> str:
-    """失败归类（spec §6，报告标签，非 gate）。按 contract 链第一处断裂归类，preflight 优先。
-    返回 'none' 表示四条 invariant 全满足。"""
+def classify_loki_failure(obs: dict) -> str | None:
+    """失败归类（spec §6，报告标签，非 gate）。
+
+    **仅当 Loki contract invariant 未满足时返回 F1–F4**；若 contract 已满足，返回 `None`
+    —— 即使此时超预算。budget / max_steps **不是 failure class**，由独立 observation 字段
+    `budget_exhausted` 承载（用户 2026-09-22 冻结：F5 不是 Loki contract failure）。"""
     if not obs.get("preflight_ok", True):
         return "F1_contract_not_exposed"
     calls = obs.get("loki_calls") or []
     if not calls:
         return "F2_no_loki_call"
-    if not any(c.get("success") for c in calls):
+    ok = _successful_loki_calls(obs)
+    if not ok:
         return "F2_invalid_logql_only"
-    if not any((c.get("result_count") or 0) > 0 for c in calls):
+    if not any((c.get("result_count") or 0) > 0 for c in ok):
         return "F3_valid_query_empty_result"
     if "loki" not in (obs.get("evidence_sources") or set()):
         return "F4_obtained_but_not_submitted"
-    if not obs.get("budget_compliance", True):
-        return "F5_budget_exhausted"
-    return "none"
+    return None
 
 
 def evidence_correlation(evidence, loki_logs, min_overlap: int = 1) -> list[dict]:
@@ -253,6 +263,44 @@ def build_trace(scene: dict, model_name: str, obs: dict) -> dict:
         "loki": obs.get("loki_calls") or [],
         "evidence_correlation": obs.get("evidence_correlation") or [],
     }
+
+
+def _loki_log_lines(data) -> list[str]:
+    """从 /loki/api/v1/query_range 响应体提取日志行文本（streams 形态）。
+    结构非法/为空一律返回 []，不抛异常。只取观察用文本，不保留整个 HTTP response（spec §7.3）。"""
+    try:
+        result = data["data"]["result"]
+    except (TypeError, KeyError, IndexError):
+        return []
+    lines: list[str] = []
+    for stream in result or []:
+        for entry in ((stream or {}).get("values") or []):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                lines.append(str(entry[1]))
+    return lines
+
+
+_LOG_TEXT_LIMIT = 20
+_LOG_LINE_LIMIT = 500
+
+
+def _record_loki_call(query: str, result) -> None:
+    """把一次 search_logs 的观察值追加到 _LOKI_CALLS（spec §7.2/§7.3）。
+
+    只读既有 ToolResult 的 success/error/data —— **不改变生产 ToolResult contract**（spec §8）。
+    成功路径上生产 ToolResult 不携带状态码，故 status 记 None（不改生产契约，接受该观察缺口）。
+    """
+    entry = {"query": query, "success": bool(result.success), "error": result.error,
+             "status": None, "result_count": 0, "logs": []}
+    if result.success:
+        lines = _loki_log_lines(getattr(result, "data", None))
+        entry["result_count"] = len(lines)
+        entry["logs"] = [ln[:_LOG_LINE_LIMIT] for ln in lines[:_LOG_TEXT_LIMIT]]
+    else:
+        m = _LOKI_HTTP_RE.search(result.error or "")
+        if m:
+            entry["status"] = int(m.group(1))
+    _LOKI_CALLS.append(entry)
 
 
 LOKI_SCENE = "real_loki_contract"
@@ -352,10 +400,15 @@ class _CountingMonitoring(MonitoringTool):
         return super().query_metric_range(metric, target, start, end, step)
 
 
+_LOKI_CALLS: list[dict] = []
+
+
 class _CountingLogging(LoggingTool):
     def search_logs(self, query: str, limit: int = 50, start=None, end=None):
         _bump_read("search_logs")
-        return super().search_logs(query, limit, start, end)
+        result = super().search_logs(query, limit, start, end)
+        _record_loki_call(query, result)
+        return result
 
 
 class _CountingKnowledge(KnowledgeTool):
@@ -393,6 +446,7 @@ class _LoggingModel:
 def _run_scenario(scenario: dict) -> dict:
     _READ_ORDER.clear()
     _FULL_ORDER.clear()
+    _LOKI_CALLS.clear()
 
     settings = Settings()  # 读 .env；仅 URL/rag 覆写，llm_* 与 agent_* 保持 .env/env 值
     settings.prometheus_url = PROM_URL
@@ -491,14 +545,23 @@ def _run_scenario(scenario: dict) -> dict:
             "evidence_sources": {e.source.value for e in got.rca.evidence} if got.rca else set(),
             "rca": got.rca,
         })
+        obs["loki_calls"] = list(_LOKI_CALLS)
+        _logs = [ln for c in _LOKI_CALLS for ln in (c.get("logs") or [])]
+        obs["evidence_correlation"] = evidence_correlation(
+            got.rca.evidence if got.rca else [], _logs)
     else:
         obs.update({"rca_valid": False, "rca_source": None, "status": None,
                     "verdict": None, "failure_code": None, "root_cause": None,
-                    "evidence_count": 0, "evidence_sources": set(), "rca": None})
+                    "evidence_count": 0, "evidence_sources": set(), "rca": None,
+                    "loki_calls": list(_LOKI_CALLS), "evidence_correlation": [],
+                    })
+    # budget 不是 Loki contract failure（spec §6 冻结：F5 已废除）：作为独立 observation 字段呈现。
+    obs["budget_exhausted"] = not obs.get("budget_compliance", True)
     return obs
 
 
 import argparse  # noqa: E402
+import json  # noqa: E402
 
 import httpx  # noqa: E402
 
@@ -535,7 +598,9 @@ def _fmt(obs: dict, model_name: str) -> str:
         corr = obs.get("evidence_correlation") or []
         lines.append("evidence_correlation: " + (
             ", ".join(f"{c['evidence_index']}:{c['status']}" for c in corr) or "-"))
-        lines.append(f"loki_failure_class: {classify_loki_failure(obs)}")
+        _fail = classify_loki_failure(obs)
+        lines.append(f"loki_failure_class: {_fail if _fail else 'none'}")
+        lines.append(f"budget_exhausted: {obs.get('budget_exhausted', False)}")
     if obs.get("evidence_count"):
         lines.append(f"evidence: {obs['evidence_count']} -> {sorted(obs.get('evidence_sources') or [])}")
     if obs.get("root_cause"):
@@ -563,8 +628,10 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog="l3_real_backend")
     parser.add_argument("--expect", action="append", default=[],
-                        choices=["rca", "convergence", "tool", "fallback", "all"],
+                        choices=["rca", "convergence", "tool", "fallback", "all", "loki_contract"],
                         help="可选门禁（默认只观测不失败）")
+    parser.add_argument("--trace-out", default=None, metavar="PATH",
+                        help="额外写结构化 JSON trace 到 PATH（默认不写，spec §7.1）")
     parser.add_argument("scene", nargs="*", help="场景名子串过滤（如 cpu / error / hybrid）")
     args = parser.parse_args(argv)
 
@@ -581,6 +648,18 @@ def main(argv=None) -> int:
         return 3
 
     selected = select_scenarios(SCENARIOS, args.scene, args.expect)
+
+    # L3-1 preflight（spec §5.2）：确定性、不调模型；失败即退出，绝不消耗 token。
+    preflight_ok = None
+    if any(s["name"] == "real_loki_contract" for s in selected):
+        from app.agent.agent import adapt_tools
+        _adapters = {a.name: a for a in adapt_tools([LoggingTool(settings)])}
+        preflight_ok, _pf_reason = loki_preflight_ok(
+            _adapters["search_logs"].description, settings.loki_label_keys)
+        print(f"preflight(L3-1): {'PASS' if preflight_ok else 'FAIL'} —— {_pf_reason}\n")
+        if not preflight_ok:
+            return 4
+
     print("\n==== L3 Real LLM + Real Backend 观测 ====")
     print(f"model={settings.llm_model}  预算(read)={settings.agent_max_read_tools}  "
           f"max_steps={settings.agent_max_steps}  场景数={len(selected)}\n")
@@ -589,9 +668,19 @@ def main(argv=None) -> int:
     for s in selected:
         print(f"--- [{s['kind']}] {s['name']} | {s['title']} | tools={s['tools']} ---")
         obs = _run_scenario(s)
+        obs["preflight_ok"] = preflight_ok if s["name"] == "real_loki_contract" else True
         print(_fmt(obs, settings.llm_model))
         print()
         results.append(obs)
+
+    if args.trace_out:
+        payload = [build_trace(s, settings.llm_model, o)
+                   for s, o in zip(selected, results)]
+        _path = Path(args.trace_out)
+        _path.parent.mkdir(parents=True, exist_ok=True)
+        _path.write_text(json.dumps(payload[0] if len(payload) == 1 else payload,
+                                    ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"trace written: {_path}\n")
 
     print(_summary(results, settings.llm_model))
     for obs in results:
@@ -609,6 +698,7 @@ def main(argv=None) -> int:
         "rca_source": o.get("rca_source"),
         "submit_attempted": o.get("submit_attempted"),
         "budget_compliance": o.get("budget_compliance"),
+        "loki_contract_ok": loki_contract_success(o)[0],
     } for o in results]
     passed = evaluate_expect(expects, proj)
     print(f"--expect {sorted(expects)} -> {'PASS' if passed else 'FAIL'}")
