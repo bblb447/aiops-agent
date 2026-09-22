@@ -2316,7 +2316,7 @@ tests/integration/agent/
 ```
 
 - marker 沿用 `integration`；无二进制时父 conftest `pytest.skip` 自动生效。
-- 运行：`pytest -m integration tests/integration/agent/`（L1 的 14 个用例不受影响）。
+- 运行：`pytest -m integration tests/integration/agent/`（L1 的 15 个用例不受影响）。
 
 ## 45.4 Scripted Model（严格脚本化）
 
