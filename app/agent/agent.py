@@ -107,6 +107,11 @@ class _ToolAdapter(SmolTool):
         if source_type is not None:
             base = (f"{base}\n证据来源(source)：{source_type.value}"
                     f"（引用本工具的证据，source 必须填 \"{source_type.value}\"）")
+        # #11：工具自身声明的附加描述（如 LogQL/label 契约）。适配器只负责暴露，
+        # 不承载任何业务概念——文案由工具侧合成（Tool owns semantics）。
+        extra = getattr(target, "extra_description", None)
+        if extra:
+            base = f"{base}\n{extra}"
         self.description = base
         super().__init__()
 
