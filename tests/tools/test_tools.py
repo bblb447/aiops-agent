@@ -202,3 +202,58 @@ def test_build_tools_returns_four_tools():
     tools = build_tools(Settings())
     names = {t.__class__.__name__ for t in tools}
     assert names == {"MonitoringTool", "LoggingTool", "CMDBTool", "KnowledgeTool"}
+
+
+# ===== #11 Loki 400 错误契约（spec §8）=====
+
+
+def _loki_stub(monkeypatch, status: int, text: str):
+    def fake_get(url, params=None, timeout=None):
+        return httpx.Response(status, request=httpx.Request("GET", str(url)), text=text)
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+
+def test_search_logs_400_passes_through_loki_body(monkeypatch):
+    _loki_stub(monkeypatch, 400,
+               "parse error at line 1, col 1: syntax error: unexpected IDENTIFIER")
+    tool = LoggingTool(Settings(loki_url="http://loki:3100"))
+    r = tool.search_logs("order-service 500 error")
+    assert r.success is False
+    assert "HTTP 400" in r.error
+    assert "parse error" in r.error
+
+
+def test_search_logs_400_truncates_long_body_to_500(monkeypatch):
+    _loki_stub(monkeypatch, 400, "x" * 1200)
+    tool = LoggingTool(Settings(loki_url="http://loki:3100"))
+    r = tool.search_logs("bad")
+    assert r.success is False
+    # 前缀（含状态码与固定文案）之外，body 被截断为 500 字符 + "..."
+    assert "x" * 500 in r.error
+    assert "x" * 501 not in r.error
+    assert r.error.endswith("...")
+
+
+def test_search_logs_non_400_exception_keeps_generic_message(monkeypatch):
+    # 非 400（网络/超时）走既有通用处理，消息一字不改（回归钉子）
+    def boom(url, params=None, timeout=None):
+        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(httpx, "get", boom)
+    tool = LoggingTool(Settings(loki_url="http://loki:3100"))
+    r = tool.search_logs('{app="order-service"}')
+    assert r.success is False
+    assert "Loki 查询失败" in r.error
+    assert "ConnectError" in r.error
+
+
+def test_search_logs_empty_result_is_still_success(monkeypatch):
+    # spec §8：200 + result:[] 是合法的"没有匹配日志"，不得做空结果启发式（回归钉子）
+    def fake_get(url, params=None, timeout=None):
+        return httpx.Response(200, request=httpx.Request("GET", str(url)),
+                              json={"status": "success",
+                                    "data": {"resultType": "streams", "result": []}})
+    monkeypatch.setattr(httpx, "get", fake_get)
+    tool = LoggingTool(Settings(loki_url="http://loki:3100"))
+    r = tool.search_logs('{service="order-service"}')
+    assert r.success is True
+    assert r.data["data"]["result"] == []

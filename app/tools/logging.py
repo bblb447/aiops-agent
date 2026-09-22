@@ -60,6 +60,13 @@ class LoggingTool:
         try:
             resp = httpx.get(f"{self._url}/loki/api/v1/query_range", params=params, timeout=10)
             resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            # spec §8：透传 HTTP status + Loki 原始 body（只截断，不解析/不分类/不重试/不改写）
+            body = (e.response.text or "").strip()
+            if len(body) > 500:
+                body = body[:500] + "..."
+            return ToolResult(success=False, tool="search_logs",
+                              error=f"Loki 拒绝查询（HTTP {e.response.status_code}）：{body}")
         except Exception as e:
             return ToolResult(success=False, tool="search_logs",
                               error=f"Loki 查询失败: {type(e).__name__}: {e}")
