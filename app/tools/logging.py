@@ -10,7 +10,7 @@ _CONTRACT_BASE = (
     "查询 Loki 日志。query 必须是合法 LogQL：stream selector 必须用花括号包裹，"
     "形如 {<label-key>=\"<value>\"}；需要按内容过滤时可用 |= \"<text>\"。"
     "纯文本（如 error timeout）不是合法 LogQL。"
-    "Loki 拒绝查询时会返回 HTTP 状态码与 Loki 的原始错误信息，据此修正 query 后可重试。"
+    "Loki 返回错误时会附带 HTTP 状态码与 Loki 的原始错误信息，据此修正 query 后可重试。"
 )
 
 
@@ -66,7 +66,7 @@ class LoggingTool:
             if len(body) > 500:
                 body = body[:500] + "..."
             return ToolResult(success=False, tool="search_logs",
-                              error=f"Loki 拒绝查询（HTTP {e.response.status_code}）：{body}")
+                              error=f"Loki 返回错误（HTTP {e.response.status_code}）：{body}")
         except Exception as e:
             return ToolResult(success=False, tool="search_logs",
                               error=f"Loki 查询失败: {type(e).__name__}: {e}")
