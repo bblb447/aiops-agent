@@ -219,6 +219,7 @@ def test_search_logs_400_passes_through_loki_body(monkeypatch):
     tool = LoggingTool(Settings(loki_url="http://loki:3100"))
     r = tool.search_logs("order-service 500 error")
     assert r.success is False
+    assert "Loki 返回错误" in r.error
     assert "HTTP 400" in r.error
     assert "parse error" in r.error
 
@@ -234,8 +235,20 @@ def test_search_logs_400_truncates_long_body_to_500(monkeypatch):
     assert r.error.endswith("...")
 
 
-def test_search_logs_non_400_exception_keeps_generic_message(monkeypatch):
-    # 非 400（网络/超时）走既有通用处理，消息一字不改（回归钉子）
+def test_search_logs_5xx_passes_through_loki_body(monkeypatch):
+    # 4xx/5xx 同走透传路径：except 捕获【全部】httpx.HTTPStatusError（spec 勘误 E1），
+    # 非 400 状态【不】落入通用消息。5xx 表示 Loki 自身失败，故文案用状态中性的「返回错误」。
+    _loki_stub(monkeypatch, 503, "too many outstanding requests")
+    tool = LoggingTool(Settings(loki_url="http://loki:3100"))
+    r = tool.search_logs('{app="order-service"}')
+    assert r.success is False
+    assert "Loki 返回错误" in r.error
+    assert "HTTP 503" in r.error
+    assert "too many outstanding requests" in r.error
+
+
+def test_search_logs_transport_error_keeps_generic_message(monkeypatch):
+    # 只有【非 HTTPStatusError】异常（网络/超时等传输错误）才走既有通用处理，消息一字不改（回归钉子）
     def boom(url, params=None, timeout=None):
         raise httpx.ConnectError("connection refused")
     monkeypatch.setattr(httpx, "get", boom)

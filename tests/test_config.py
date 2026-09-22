@@ -40,6 +40,22 @@ def test_loki_label_keys_dedupes_keeping_first_order(monkeypatch):
     assert Settings().loki_label_keys == ["app", "service_name"]
 
 
+def test_loki_label_keys_dedupes_after_strip(monkeypatch):
+    # 去重必须在 strip 【之后】：" app " strip 成 "app" 后须与已有 "app" 判为同一项。
+    # 若顺序反了（先 dedupe 再 strip），这里会得到 ["app", "app"] —— 回归钉子。
+    monkeypatch.setenv("LOKI_LABEL_KEYS", '["app", " app "]')
+    assert Settings(_env_file=None).loki_label_keys == ["app"]
+
+
+@pytest.mark.parametrize("good", ["_private", "A1_", "service_name"])
+def test_loki_label_keys_accepts_legal_unusual_names(monkeypatch, good):
+    # 接受侧钉子：Loki/Prometheus 规则是 [a-zA-Z_][a-zA-Z0-9_]*，
+    # 故下划线开头 / 含大写 / 多字符小写都合法，须原样通过。
+    # 若日后被收窄成 ^[a-z][a-z0-9_]*$，本用例会失败（当前套件的缺口）。
+    monkeypatch.setenv("LOKI_LABEL_KEYS", f'["{good}"]')
+    assert Settings(_env_file=None).loki_label_keys == [good]
+
+
 def test_loki_label_keys_rejects_empty_entry(monkeypatch):
     # spec §5：空串是【拒绝】，不是丢弃 —— 不得静默变成"只有一个 key"或空 key。
     monkeypatch.setenv("LOKI_LABEL_KEYS", '["app", ""]')
