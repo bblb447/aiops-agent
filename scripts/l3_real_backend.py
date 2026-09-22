@@ -274,7 +274,9 @@ def _loki_log_lines(data) -> list[str]:
         return []
     lines: list[str] = []
     for stream in result or []:
-        for entry in ((stream or {}).get("values") or []):
+        if not isinstance(stream, dict):
+            continue
+        for entry in (stream.get("values") or []):
             if isinstance(entry, (list, tuple)) and len(entry) >= 2:
                 lines.append(str(entry[1]))
     return lines

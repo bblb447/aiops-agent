@@ -378,6 +378,7 @@ def test_loki_log_lines_extracts_streams_and_tolerates_malformed():
     assert _loki_log_lines({}) == []
     assert _loki_log_lines(None) == []
     assert _loki_log_lines({"data": {"result": [{"values": None}]}}) == []
+    assert _loki_log_lines({"data": {"result": "abc"}}) == []
 
 
 def test_record_loki_call_parses_status_and_body_from_error_contract():
@@ -435,23 +436,31 @@ def test_no_f5_and_budget_is_a_separate_observation():
 
 
 def test_gate_and_classifier_share_one_loki_call_set():
-    # 失败调用带 result_count>0（构造出的不可达形态）时，gate 与 classifier 必须一致。
+    # 真正能分辨"共用集合"的形态：一条【成功但空结果】+ 一条【失败但带 result_count】。
+    # 若 classifier 仍对**全部**调用判 result_count>0（修复前的实现），它会落到 F4；
+    # 共用「成功调用」集合后必须返回 F3。（Task 3 复审指出旧形态在修复前的代码上也通过。）
     obs = _loki_obs(
-        loki_calls=[{"query": "bad", "success": False, "result_count": 5}],
-        evidence_sources={"loki"})
-    assert loki_contract_success(obs)[0] is False          # L3-2：无成功调用
-    assert classify_loki_failure(obs) == "F2_invalid_logql_only"
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 0},
+                    {"query": "bad", "success": False, "result_count": 5}],
+        evidence_sources=set())
+    assert loki_contract_success(obs) == (False, "L3-3: no non-empty real loki result")
+    assert classify_loki_failure(obs) == "F3_valid_query_empty_result"
 
 
 def test_legacy_tool_and_fallback_gates_exclude_loki_contract():
-    def rec(name, rca_source=None, sa=None, lc=True):
+    def rec(name, rca_source=None, sa=None):
         return {"name": name, "success": True, "rca_source": rca_source,
                 "submit_attempted": sa, "budget_compliance": True,
-                "loki_contract_ok": lc}
+                "loki_contract_ok": True}
 
-    # 一条失败的 real_loki_contract 记录不得影响 tool / fallback 两个既有分支。
-    bad_lk = rec("real_loki_contract", lc=False, rca_source=None, sa=True)
+    # L 场景【不得】满足既有 tool / fallback 门禁。
+    # 若有人去掉这两个分支内部的场景名过滤、只靠 legacy 过滤，下面两条会变红。
+    assert evaluate_expect(
+        {"tool"}, [rec("real_loki_contract", rca_source="tool", sa=False)]) is False
+    assert evaluate_expect(
+        {"fallback"}, [rec("real_loki_contract", rca_source="final_answer", sa=False)]) is False
+    # 而 legacy 场景仍然决定结果（正向）。
     ok_b = rec("error_spike_multisource", rca_source="tool", sa=False)
     ok_c = rec("hybrid_fallback_observation", rca_source="final_answer", sa=False)
-    assert evaluate_expect({"tool"}, [ok_b, ok_c, bad_lk]) is True
-    assert evaluate_expect({"fallback"}, [ok_c, bad_lk]) is True
+    assert evaluate_expect({"tool"}, [ok_b, ok_c]) is True
+    assert evaluate_expect({"fallback"}, [ok_c]) is True
