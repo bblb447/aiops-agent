@@ -14,6 +14,7 @@ from scripts.l3_real_backend import (  # noqa: E402
     loki_preflight_ok,
     merge_tool_calls,
     scene_success,
+    select_scenarios,
 )
 
 
@@ -325,3 +326,35 @@ def test_evaluate_expect_loki_contract_is_separate_from_legacy_gates():
     assert evaluate_expect({"convergence"}, [ok_a, ok_b, ok_c, bad_lk]) is True
     # 对照：若把同一份 bad 记录换成既有场景，既有门禁必须失败。
     assert evaluate_expect({"rca"}, [ok_a, rec("error_spike_multisource", ok=False)]) is False
+
+
+def _scenes():
+    return [{"name": "cpu_alert_negative_control"},
+            {"name": "error_spike_multisource"},
+            {"name": "hybrid_fallback_observation"},
+            {"name": "real_loki_contract"}]
+
+
+def test_default_selection_excludes_loki_contract():
+    # 默认运行集必须仍是 A/B/C —— 既有命令不得额外启动真实模型。
+    names = [s["name"] for s in select_scenarios(_scenes(), [], [])]
+    assert names == ["cpu_alert_negative_control", "error_spike_multisource",
+                     "hybrid_fallback_observation"]
+    # 既有门禁同理。
+    for exp in (["rca"], ["all"], ["convergence"], ["tool"], ["fallback"]):
+        assert "real_loki_contract" not in [s["name"] for s in
+                                            select_scenarios(_scenes(), [], exp)]
+
+
+def test_explicit_selection_includes_loki_contract():
+    # 位置参数精确命中。
+    assert [s["name"] for s in select_scenarios(_scenes(), ["real_loki_contract"], [])] \
+        == ["real_loki_contract"]
+    # --expect loki_contract → 只跑该场景（spec §9）。
+    assert [s["name"] for s in select_scenarios(_scenes(), [], ["loki_contract"])] \
+        == ["real_loki_contract"]
+    # A/B/C 的既有子串过滤行为不变。
+    assert [s["name"] for s in select_scenarios(_scenes(), ["error"], [])] \
+        == ["error_spike_multisource"]
+    # 对 L 只认精确名：`loki` 子串不得命中它。
+    assert [s["name"] for s in select_scenarios(_scenes(), ["loki"], [])] == []

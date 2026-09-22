@@ -255,6 +255,28 @@ def build_trace(scene: dict, model_name: str, obs: dict) -> dict:
     }
 
 
+LOKI_SCENE = "real_loki_contract"
+
+
+def select_scenarios(all_scenarios, scene_filters, expects) -> list[dict]:
+    """场景选择（用户 2026-09-22 冻结语义）。
+
+    A/B/C 始终是默认运行集；`real_loki_contract` **仅在显式选择时**进入 —— 位置参数精确
+    命中其名字，或 `--expect loki_contract`（专项门禁：只跑该场景）。对 L 场景**只认精确名**
+    （`--scene loki` 这类子串不得命中）；A/B/C 的既有子串过滤行为不变。
+    最小改动，不做 CLI 重构。
+    """
+    lc = [s for s in all_scenarios if s["name"] == LOKI_SCENE]
+    legacy = [s for s in all_scenarios if s["name"] != LOKI_SCENE]
+    if "loki_contract" in set(expects):
+        return list(lc)
+    selected = [s for s in legacy
+                if not scene_filters or any(f in s["name"] for f in scene_filters)]
+    if LOKI_SCENE in scene_filters:
+        selected = selected + lc
+    return selected
+
+
 import time  # noqa: E402
 
 from app.agent import agent as _agent_mod  # noqa: E402
@@ -558,8 +580,7 @@ def main(argv=None) -> int:
         print(f"后端未就绪：请先运行 python tests/integration/backend.py up（需 {PROM_URL} 可达）")
         return 3
 
-    selected = [s for s in SCENARIOS
-                if not args.scene or any(f in s["name"] for f in args.scene)]
+    selected = select_scenarios(SCENARIOS, args.scene, args.expect)
     print("\n==== L3 Real LLM + Real Backend 观测 ====")
     print(f"model={settings.llm_model}  预算(read)={settings.agent_max_read_tools}  "
           f"max_steps={settings.agent_max_steps}  场景数={len(selected)}\n")
