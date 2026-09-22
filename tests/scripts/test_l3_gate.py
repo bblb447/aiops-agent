@@ -301,14 +301,20 @@ def test_scene_success_delegates_to_loki_contract():
     assert not ok2 and "L3-3" in reason2
 
 
-@pytest.mark.parametrize("name", ["cpu_alert_negative_control",
-                                  "error_spike_multisource",
-                                  "hybrid_fallback_observation"])
-def test_legacy_scenes_still_apply_the_shared_preamble(name):
+@pytest.mark.parametrize("name, satisfied", [
+    ("cpu_alert_negative_control", dict(verdict="NO_ANOMALY")),
+    ("error_spike_multisource", dict(rca_valid=True, status="ROOT_CAUSE_FOUND",
+                                     evidence_sources={"prometheus", "loki"})),
+    ("hybrid_fallback_observation", dict(rca_valid=True, status="ROOT_CAUSE_FOUND",
+                                         rca_source="final_answer", submit_attempted=False)),
+])
+def test_legacy_scenes_still_apply_the_shared_preamble(name, satisfied):
     # L 场景绕开 system_error / budget 前置；这个"绕开"不得泄漏到既有 A/B/C。
-    # 若把委托写成对所有场景生效，下面两条会变红。
-    assert scene_success(name, _obs(name, system_error="APIError: boom"))[0] is False
-    assert scene_success(name, _obs(name, read_tool_calls=99, budget=4))[0] is False
+    # 前提断言是判别力的来源：这些 obs 在**没有**前置时确实会通过 —— 否则下面两条
+    # 会因为无关原因（rca_valid=False / verdict=None）而为 False，测试就钉不住前置。
+    assert scene_success(name, _obs(name, **satisfied))[0] is True
+    assert scene_success(name, _obs(name, system_error="APIError: boom", **satisfied))[0] is False
+    assert scene_success(name, _obs(name, read_tool_calls=99, budget=4, **satisfied))[0] is False
 
 
 def test_evaluate_expect_loki_contract_is_separate_from_legacy_gates():
@@ -527,6 +533,8 @@ def test_loki_log_lines_ignores_non_stream_result_types():
     # streams 仍正常提取。
     assert _loki_log_lines({"data": {"resultType": "streams",
                                      "result": [{"values": [["1", "hit"]]}]}}) == ["hit"]
+    # resultType 缺失 → 按旧行为正常提取（不是"一律不算日志"）。
+    assert _loki_log_lines({"data": {"result": [{"values": [["1", "keep-me"]]}]}}) == ["keep-me"]
 
 
 def test_build_trace_does_not_alias_observation_lists():
