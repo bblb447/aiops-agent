@@ -11,6 +11,7 @@ exit code：缺 .env LLM key=2；backend 不可达=3；默认只观测=0（除�
 --expect 显式不满足=1。
 """
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -125,6 +126,125 @@ def evaluate_expect(expects: set[str], results: list[dict]) -> bool:
         if not (c and c[0].get("rca_source") == "final_answer" and c[0].get("submit_attempted") is False):
             return False
     return True
+
+
+# ===== #11 L3 Loki contract 判定（spec docs/superpowers/specs/2026-09-22-l3-loki-contract-design.md）=====
+
+_LOKI_HTTP_RE = re.compile(r"HTTP (\d{3})")
+_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+")
+
+
+def _tokens(text: str) -> set[str]:
+    """词元集合：英文/数字片段、小写化、丢弃单字符。仅供启发式相关性使用。"""
+    return {t.lower() for t in _TOKEN_RE.findall(text or "") if len(t) >= 2}
+
+
+def _source_value(item) -> str:
+    """EvidenceItem.source 是 EvidenceSource 枚举成员；取 canonical value。"""
+    s = getattr(item, "source", None)
+    return getattr(s, "value", s)
+
+
+def loki_preflight_ok(description: str, label_keys) -> tuple[bool, str]:
+    """L3-1（preflight，确定性，不调模型）：model-visible description 必须暴露配置声明的
+    label contract 与通用 LogQL 形态指引。失败即 fail-fast，不消耗 token（spec §5.2）。"""
+    keys = list(label_keys or [])
+    if not keys:
+        return False, 'preflight: LOKI_LABEL_KEYS 未配置（L3 验证环境需声明 ["app"]）'
+    for k in keys:
+        if k not in description:
+            return False, f"preflight: description 缺少 label key {k!r}"
+    first = keys[0]
+    if f'{{{first}="<value>"}}' not in description:
+        return False, f'preflight: description 缺少推荐 selector 形态 {{{first}="<value>"}}'
+    if "合法 LogQL" not in description:
+        return False, "preflight: description 缺少 LogQL 形态指引"
+    return True, "preflight ok"
+
+
+def loki_contract_success(obs: dict) -> tuple[bool, str]:
+    """#11 L3 gate（spec §5.2）：只判三条确定性事实。
+    预算 / system_error / 模型结论 / 调用顺序 / 调用次数一律不参与 —— 它们是 observation（§5.1）。"""
+    calls = obs.get("loki_calls") or []
+    ok = [c for c in calls if c.get("success")]
+    if not ok:
+        return False, "L3-2: no successful search_logs call"
+    if not any((c.get("result_count") or 0) > 0 for c in ok):
+        return False, "L3-3: no non-empty real loki result"
+    if "loki" not in (obs.get("evidence_sources") or set()):
+        return False, "L3-4: no loki evidence in final RCA"
+    return True, "loki contract ok"
+
+
+def classify_loki_failure(obs: dict) -> str:
+    """失败归类（spec §6，报告标签，非 gate）。按 contract 链第一处断裂归类，preflight 优先。
+    返回 'none' 表示四条 invariant 全满足。"""
+    if not obs.get("preflight_ok", True):
+        return "F1_contract_not_exposed"
+    calls = obs.get("loki_calls") or []
+    if not calls:
+        return "F2_no_loki_call"
+    if not any(c.get("success") for c in calls):
+        return "F2_invalid_logql_only"
+    if not any((c.get("result_count") or 0) > 0 for c in calls):
+        return "F3_valid_query_empty_result"
+    if "loki" not in (obs.get("evidence_sources") or set()):
+        return "F4_obtained_but_not_submitted"
+    if not obs.get("budget_compliance", True):
+        return "F5_budget_exhausted"
+    return "none"
+
+
+def evidence_correlation(evidence, loki_logs, min_overlap: int = 1) -> list[dict]:
+    """L3-4b 启发式（spec §5.2/§5.3）：fact 词元与本次真实 Loki 返回日志文本词元的交集。
+    只输出 CORRELATED / UNCERTAIN —— **永不 FAIL、不影响 exit code**。
+    CORRELATED 只表示"文本相关"，**不表示"已证明来自 Loki"**。"""
+    log_tokens: set[str] = set()
+    for line in loki_logs or []:
+        log_tokens |= _tokens(line)
+    out: list[dict] = []
+    for i, e in enumerate(evidence or []):
+        if _source_value(e) != "loki":
+            continue
+        overlap = sorted(_tokens(getattr(e, "fact", "")) & log_tokens)
+        out.append({
+            "evidence_index": i,
+            "source": "loki",
+            "status": "CORRELATED" if len(overlap) >= min_overlap else "UNCERTAIN",
+            "overlap": overlap,
+        })
+    return out
+
+
+def merge_tool_calls(tool_order, loki_calls) -> list[dict]:
+    """trace 组装（spec §7.2）：按调用顺序合并；最小插桩 —— 非 search_logs 工具只记名字，
+    不把它做成通用 tracing framework（§8）。"""
+    out: list[dict] = []
+    queue = list(loki_calls or [])
+    for name in tool_order or []:
+        if name == "search_logs" and queue:
+            rec = queue.pop(0)
+            out.append({"tool": "search_logs", "query": rec.get("query"),
+                        "success": rec.get("success"), "error": rec.get("error"),
+                        "result_count": rec.get("result_count")})
+        else:
+            out.append({"tool": name})
+    return out
+
+
+def build_trace(scene: dict, model_name: str, obs: dict) -> dict:
+    """结构化 trace（spec §7.2）。只输出观察数据；**不得写入任何凭据**（§7.3）。"""
+    rca = obs.get("rca")
+    evidence = [{"source": _source_value(e), "fact": getattr(e, "fact", "")}
+                for e in (rca.evidence if rca else [])]
+    return {
+        "scene": scene["name"],
+        "model": model_name,
+        "tool_calls": merge_tool_calls(obs.get("tool_order"), obs.get("loki_calls")),
+        "evidence": evidence,
+        "loki": obs.get("loki_calls") or [],
+        "evidence_correlation": obs.get("evidence_correlation") or [],
+    }
 
 
 import time  # noqa: E402

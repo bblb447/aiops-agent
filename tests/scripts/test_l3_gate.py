@@ -6,7 +6,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.l3_real_backend import (  # noqa: E402
     a_no_false_positive_cpu,
     budget_compliance,
+    build_trace,
+    classify_loki_failure,
     evaluate_expect,
+    evidence_correlation,
+    loki_contract_success,
+    loki_preflight_ok,
+    merge_tool_calls,
     scene_success,
 )
 
@@ -131,3 +137,146 @@ def test_evaluate_expect():
     # 有一场景超预算 → convergence 失败。
     assert evaluate_expect({"convergence"}, [ok_a, ok_b, rec("hybrid_fallback_observation",
                                                              rca_source="final_answer", sa=False, bc=False)]) is False
+
+
+# ===== #11 L3 Loki contract（spec docs/superpowers/specs/2026-09-22-l3-loki-contract-design.md）=====
+
+
+def _loki_obs(**over):
+    base = {"name": "real_loki_contract", "kind": "L", "preflight_ok": True,
+            "loki_calls": [], "evidence_sources": set(), "budget_compliance": True,
+            "system_error": None, "rca": None}
+    base.update(over)
+    return base
+
+
+def _ev(source, fact):
+    class E:
+        pass
+    e = E()
+    e.source, e.fact = source, fact
+    return e
+
+
+def test_loki_preflight_ok_against_real_contract_text():
+    # 用真实 `_build_extra_description` 产物做断言，证明 preflight 能真识别出契约。
+    from app.tools.logging import _build_extra_description
+
+    ok, reason = loki_preflight_ok(_build_extra_description(["app"]), ["app"])
+    assert ok, reason
+    # 未声明 label key → 失败（L3 环境未配 LOKI_LABEL_KEYS）。
+    ok2, _ = loki_preflight_ok(_build_extra_description([]), [])
+    assert ok2 is False
+    # description 里没有该 key → 失败。
+    ok3, _ = loki_preflight_ok(_build_extra_description([]), ["app"])
+    assert ok3 is False
+    # 多 key 时首个 key 的推荐 selector 形态必须出现。
+    ok4, _ = loki_preflight_ok(_build_extra_description(["app", "service_name"]),
+                               ["app", "service_name"])
+    assert ok4, reason
+
+
+def test_loki_contract_success_three_invariants():
+    # 三条全满足 → 通过，且不要求 RCA 正确、不要求调用顺序。
+    ok, reason = loki_contract_success(_loki_obs(
+        loki_calls=[{"query": "{app=\"order-service\"}", "success": True,
+                     "result_count": 2, "error": None}],
+        evidence_sources={"loki", "prometheus"},
+    ))
+    assert ok, reason
+    # L3-2：没有成功调用 → 失败。
+    ok2, r2 = loki_contract_success(_loki_obs(
+        loki_calls=[{"query": "bad", "success": False, "result_count": 0,
+                     "error": "Loki 返回错误（HTTP 400）：parse error"}]))
+    assert ok2 is False and "L3-2" in r2
+    # L3-3：成功但全空结果 → 失败。
+    ok3, r3 = loki_contract_success(_loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 0}]))
+    assert ok3 is False and "L3-3" in r3
+    # L3-4：拿到非空日志但 evidence 无 loki → 失败。
+    ok4, r4 = loki_contract_success(_loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 3}],
+        evidence_sources={"prometheus"}))
+    assert ok4 is False and "L3-4" in r4
+    # 超预算 + system_error 均不参与 gate（spec §5.1）。
+    ok5, reason5 = loki_contract_success(_loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 1}],
+        evidence_sources={"loki"}, budget_compliance=False,
+        system_error="APIError: boom"))
+    assert ok5, reason5
+
+
+def test_classify_loki_failure():
+    assert classify_loki_failure(_loki_obs(preflight_ok=False)) == "F1_contract_not_exposed"
+    assert classify_loki_failure(_loki_obs()) == "F2_no_loki_call"
+    assert classify_loki_failure(_loki_obs(
+        loki_calls=[{"query": "bare string", "success": False, "result_count": 0}])
+    ) == "F2_invalid_logql_only"
+    assert classify_loki_failure(_loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 0}])
+    ) == "F3_valid_query_empty_result"
+    assert classify_loki_failure(_loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 2}],
+        evidence_sources={"prometheus"})
+    ) == "F4_obtained_but_not_submitted"
+    assert classify_loki_failure(_loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 2}],
+        evidence_sources={"loki"}, budget_compliance=False)
+    ) == "F5_budget_exhausted"
+    # 全满足 → none。
+    assert classify_loki_failure(_loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 2}],
+        evidence_sources={"loki"})
+    ) == "none"
+
+
+def test_evidence_correlation_never_fails_and_ignores_non_loki():
+    logs = ["HTTP 500 Internal Server Error", "order-service request failed status=500"]
+    corr = evidence_correlation(
+        [_ev("loki", "order-service returned HTTP 500 errors"),
+         _ev("prometheus", "error rate 0.2")],
+        logs)
+    # 只对 loki 证据产出信号。
+    assert [c["evidence_index"] for c in corr] == [0]
+    assert corr[0]["status"] == "CORRELATED"
+    assert "500" in corr[0]["overlap"]
+    # 无重叠 → UNCERTAIN（合法摘要场景），且【没有】任何 FAIL 状态。
+    corr2 = evidence_correlation([_ev("loki", "服务出现错误")], logs)
+    assert corr2[0]["status"] == "UNCERTAIN"
+    assert all(c["status"] in ("CORRELATED", "UNCERTAIN") for c in corr2)
+    # 无日志 → 全部 UNCERTAIN，不抛异常。
+    assert evidence_correlation([_ev("loki", "x y")], [])[0]["status"] == "UNCERTAIN"
+
+
+def test_merge_tool_calls_pairs_loki_records_in_order():
+    order = ["query_workload", "search_logs", "search_logs", "submit_rca_result"]
+    calls = [{"query": "q1", "success": True, "error": None, "result_count": 1},
+             {"query": "q2", "success": False, "error": "HTTP 400", "result_count": 0}]
+    merged = merge_tool_calls(order, calls)
+    assert [m["tool"] for m in merged] == order
+    assert merged[1]["query"] == "q1" and merged[1]["result_count"] == 1
+    assert merged[2]["query"] == "q2" and merged[2]["success"] is False
+    # 非 loki 工具只记名字（最小插桩）。
+    assert set(merged[0]) == {"tool"}
+
+
+def test_build_trace_shape():
+    class _R:
+        evidence = [_ev("loki", "order-service returned HTTP 500 errors")]
+
+    trace = build_trace(
+        {"name": "real_loki_contract"}, "deepseek-v4-flash",
+        {"tool_order": ["search_logs"], "rca": _R(),
+         "loki_calls": [{"query": "{app=\"x\"}", "success": True, "status": None,
+                         "result_count": 1, "logs": ["line"]}],
+         "evidence_correlation": [{"evidence_index": 0, "source": "loki",
+                                   "status": "CORRELATED", "overlap": ["500"]}]})
+    assert trace["scene"] == "real_loki_contract"
+    assert trace["model"] == "deepseek-v4-flash"
+    assert trace["tool_calls"] == [{"tool": "search_logs", "query": "{app=\"x\"}",
+                                    "success": True, "error": None, "result_count": 1}]
+    assert trace["evidence"] == [{"source": "loki", "fact": "order-service returned HTTP 500 errors"}]
+    assert trace["loki"][0]["logs"] == ["line"]
+    assert trace["evidence_correlation"][0]["status"] == "CORRELATED"
+    # 无 rca 时不抛异常。
+    assert build_trace({"name": "x"}, "m", {})["evidence"] == []
