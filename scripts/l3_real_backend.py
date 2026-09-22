@@ -260,18 +260,28 @@ def build_trace(scene: dict, model_name: str, obs: dict) -> dict:
         "model": model_name,
         "tool_calls": merge_tool_calls(obs.get("tool_order"), obs.get("loki_calls")),
         "evidence": evidence,
-        "loki": obs.get("loki_calls") or [],
-        "evidence_correlation": obs.get("evidence_correlation") or [],
+        "loki": list(obs.get("loki_calls") or []),
+        "evidence_correlation": list(obs.get("evidence_correlation") or []),
     }
 
 
 def _loki_log_lines(data) -> list[str]:
-    """从 /loki/api/v1/query_range 响应体提取日志行文本（streams 形态）。
-    结构非法/为空一律返回 []，不抛异常。只取观察用文本，不保留整个 HTTP response（spec §7.3）。"""
+    """从 /loki/api/v1/query_range 响应体提取**日志行**文本（仅 streams 类型）。
+
+    matrix / vector 是 Loki 对 **metric LogQL** 的返回，不是日志；若计入，`result_count > 0`
+    会让 L3-3「至少一次非空真实日志结果」被 metric 结果假满足（spec §7.3）。
+    `resultType` 缺失时按旧行为处理，不强加假设。
+    结构非法/为空一律返回 []，不抛异常。只取观察用文本，不保留整个 HTTP response（spec §7.3）。
+    """
     try:
-        result = data["data"]["result"]
+        payload = data["data"]
+        result = payload["result"]
     except (TypeError, KeyError, IndexError):
         return []
+    if isinstance(payload, dict):
+        rt = payload.get("resultType")
+        if rt is not None and rt != "streams":
+            return []
     lines: list[str] = []
     for stream in result or []:
         if not isinstance(stream, dict):

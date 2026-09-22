@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.l3_real_backend import (  # noqa: E402
     a_no_false_positive_cpu,
@@ -299,12 +301,14 @@ def test_scene_success_delegates_to_loki_contract():
     assert not ok2 and "L3-3" in reason2
 
 
-def test_scene_success_legacy_scenes_unaffected_by_new_scene():
-    # A/B/C 语义零改动：既有用例已在上面覆盖，这里只钉住"新场景不影响它们"。
-    ok, reason = scene_success("error_spike_multisource", _obs(
-        "error_spike_multisource", rca_valid=True, status="ROOT_CAUSE_FOUND",
-        evidence_sources={"prometheus", "loki"}, submit_attempted=True, rca_source="tool"))
-    assert ok, reason
+@pytest.mark.parametrize("name", ["cpu_alert_negative_control",
+                                  "error_spike_multisource",
+                                  "hybrid_fallback_observation"])
+def test_legacy_scenes_still_apply_the_shared_preamble(name):
+    # L 场景绕开 system_error / budget 前置；这个"绕开"不得泄漏到既有 A/B/C。
+    # 若把委托写成对所有场景生效，下面两条会变红。
+    assert scene_success(name, _obs(name, system_error="APIError: boom"))[0] is False
+    assert scene_success(name, _obs(name, read_tool_calls=99, budget=4))[0] is False
 
 
 def test_evaluate_expect_loki_contract_is_separate_from_legacy_gates():
@@ -344,10 +348,11 @@ def test_default_selection_excludes_loki_contract():
     names = [s["name"] for s in select_scenarios(_scenes(), [], [])]
     assert names == ["cpu_alert_negative_control", "error_spike_multisource",
                      "hybrid_fallback_observation"]
-    # 既有门禁同理。
+    # 既有门禁同理：既有的 expects 一律返回完整 A/B/C 列表。
     for exp in (["rca"], ["all"], ["convergence"], ["tool"], ["fallback"]):
-        assert "real_loki_contract" not in [s["name"] for s in
-                                            select_scenarios(_scenes(), [], exp)]
+        assert [s["name"] for s in select_scenarios(_scenes(), [], exp)] == [
+            "cpu_alert_negative_control", "error_spike_multisource",
+            "hybrid_fallback_observation"]
 
 
 def test_explicit_selection_includes_loki_contract():
@@ -464,3 +469,71 @@ def test_legacy_tool_and_fallback_gates_exclude_loki_contract():
     ok_c = rec("hybrid_fallback_observation", rca_source="final_answer", sa=False)
     assert evaluate_expect({"tool"}, [ok_b, ok_c]) is True
     assert evaluate_expect({"fallback"}, [ok_c]) is True
+
+
+def test_loki_preflight_ok_pins_every_branch():
+    # final review I1：preflight 的 5 个分支必须逐条可分辨（删掉任一检查本用例须变红）。
+    from app.tools.logging import _build_extra_description
+
+    base = _build_extra_description(["app"])          # 含 app / {app="<value>"} / 合法 LogQL
+    assert loki_preflight_ok(base, ["app"])[0] is True
+
+    # 分支：所声明的某个 key 未出现在 description 中。
+    assert loki_preflight_ok(base, ["app", "service_name"])[0] is False
+    # 分支：缺少推荐 selector 形态（有 key、有 LogQL 指引，但没有 {app="<value>"}）。
+    assert loki_preflight_ok("含 app 与 合法 LogQL 但无 selector 示例", ["app"])[0] is False
+    # 分支：缺少 LogQL 形态指引（有 key、有 selector 形态，但没有「合法 LogQL」）。
+    assert loki_preflight_ok('含 app 与 {app="<value>"} 但无通用指引', ["app"])[0] is False
+    # 分支：未声明任何 label key。
+    assert loki_preflight_ok(base, [])[0] is False
+
+
+def test_record_loki_call_success_path_extracts_count_and_truncates():
+    # final review I2：这是 L3-3 gate 输入（result_count）的唯一生产者，必须钉住。
+    _LOKI_CALLS.clear()
+
+    class _R:
+        pass
+
+    long_line = "x" * 800
+    data = {"data": {"resultType": "streams", "result": [
+        {"stream": {"app": "order-service"},
+         "values": [["1", "line-a"], ["2", long_line]]}]}}
+    r = _R(); r.success = True; r.error = None; r.data = data
+    _record_loki_call('{app="order-service"}', r)
+    rec = _LOKI_CALLS[-1]
+    assert rec["result_count"] == 2          # 计数用**未截断**的行数
+    assert rec["success"] is True
+    assert rec["status"] is None             # 成功路径生产 ToolResult 不携带状态码
+    assert rec["logs"][0] == "line-a"
+    assert rec["logs"][1] == long_line[:500] and len(rec["logs"][1]) == 500
+
+    # 条数上限：只保留前 20 条，但 result_count 仍是全量。
+    _LOKI_CALLS.clear()
+    many = {"data": {"resultType": "streams", "result": [
+        {"values": [[str(i), f"l{i}"] for i in range(25)]}]}}
+    r2 = _R(); r2.success = True; r2.error = None; r2.data = many
+    _record_loki_call("q", r2)
+    assert _LOKI_CALLS[-1]["result_count"] == 25
+    assert len(_LOKI_CALLS[-1]["logs"]) == 20
+
+
+def test_loki_log_lines_ignores_non_stream_result_types():
+    # metric LogQL 的返回不是日志 —— 不得计入 result_count（L3-3 语义）。
+    assert _loki_log_lines({"data": {"resultType": "matrix",
+                                     "result": [{"metric": {}, "values": [["1", "0.42"]]}]}}) == []
+    assert _loki_log_lines({"data": {"resultType": "vector",
+                                     "result": [{"metric": {}, "value": ["1", "0.5"]}]}}) == []
+    # streams 仍正常提取。
+    assert _loki_log_lines({"data": {"resultType": "streams",
+                                     "result": [{"values": [["1", "hit"]]}]}}) == ["hit"]
+
+
+def test_build_trace_does_not_alias_observation_lists():
+    obs = {"tool_order": [], "loki_calls": [{"query": "q"}], "evidence_correlation": []}
+    trace = build_trace({"name": "x"}, "m", obs)
+    # 事后改动 obs 不得影响已生成的 trace。
+    obs["loki_calls"].append({"query": "late"})
+    obs["evidence_correlation"].append({"evidence_index": 0})
+    assert len(trace["loki"]) == 1
+    assert trace["evidence_correlation"] == []
