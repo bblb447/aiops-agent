@@ -280,3 +280,48 @@ def test_build_trace_shape():
     assert trace["evidence_correlation"][0]["status"] == "CORRELATED"
     # 无 rca 时不抛异常。
     assert build_trace({"name": "x"}, "m", {})["evidence"] == []
+
+
+def test_scene_success_delegates_to_loki_contract():
+    # real_loki_contract 走专用判据：不含 system_error / budget 前置。
+    ok, reason = scene_success("real_loki_contract", _loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 2}],
+        evidence_sources={"loki"}, budget_compliance=False, system_error="APIError: boom"))
+    assert ok, reason
+    # 未满足 L3-3 → 失败。
+    ok2, reason2 = scene_success("real_loki_contract", _loki_obs(
+        loki_calls=[{"query": "{app=\"x\"}", "success": True, "result_count": 0}]))
+    assert not ok2 and "L3-3" in reason2
+
+
+def test_scene_success_legacy_scenes_unaffected_by_new_scene():
+    # A/B/C 语义零改动：既有用例已在上面覆盖，这里只钉住"新场景不影响它们"。
+    ok, reason = scene_success("error_spike_multisource", _obs(
+        "error_spike_multisource", rca_valid=True, status="ROOT_CAUSE_FOUND",
+        evidence_sources={"prometheus", "loki"}, submit_attempted=True, rca_source="tool"))
+    assert ok, reason
+
+
+def test_evaluate_expect_loki_contract_is_separate_from_legacy_gates():
+    def rec(name, ok=True, rca_source=None, sa=None, bc=True, lc=True):
+        return {"name": name, "success": ok, "rca_source": rca_source,
+                "submit_attempted": sa, "budget_compliance": bc,
+                "loki_contract_ok": lc}
+
+    ok_a = rec("cpu_alert_negative_control")
+    ok_b = rec("error_spike_multisource", rca_source="tool", sa=False)
+    lk = rec("real_loki_contract", lc=True)
+    # loki_contract 只验证该场景自身。
+    assert evaluate_expect({"loki_contract"}, [lk]) is True
+    # 该场景失败 → loki_contract 门禁失败。
+    assert evaluate_expect({"loki_contract"}, [rec("real_loki_contract", lc=False)]) is False
+    # 没有该场景 → 门禁失败。
+    assert evaluate_expect({"loki_contract"}, [ok_a]) is False
+    # 既有门禁【不】把该场景算进去：lk 的 success/budget 均为 False 也不影响它们。
+    ok_c = rec("hybrid_fallback_observation", rca_source="final_answer", sa=False)
+    bad_lk = rec("real_loki_contract", ok=False, bc=False, lc=True)
+    assert evaluate_expect({"all"}, [ok_a, ok_b, ok_c, bad_lk]) is True
+    assert evaluate_expect({"rca"}, [ok_a, ok_b, ok_c, bad_lk]) is True
+    assert evaluate_expect({"convergence"}, [ok_a, ok_b, ok_c, bad_lk]) is True
+    # 对照：若把同一份 bad 记录换成既有场景，既有门禁必须失败。
+    assert evaluate_expect({"rca"}, [ok_a, rec("error_spike_multisource", ok=False)]) is False

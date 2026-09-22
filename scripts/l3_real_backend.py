@@ -73,6 +73,10 @@ def scene_success(name: str, obs: dict) -> tuple[bool, str]:
     C（Hybrid 兜底）= 预算内 + submit_attempted 为 False + 合法 RCA + final_answer + ROOT_CAUSE_FOUND。
     INSUFFICIENT_EVIDENCE 显式通过仅适用于 A。
     """
+    if name == "real_loki_contract":
+        # #11 L3（spec §10）：走专用判据，绕开 A/B/C 共享的 system_error / budget 前置
+        # —— 该场景二者均为 observation（spec §5.1），且 A/B/C 语义保持不变。
+        return loki_contract_success(obs)
     if obs.get("system_error"):
         return False, "system_error"
     if not budget_compliance(obs.get("read_tool_calls", 0), obs.get("budget", 4)):
@@ -99,31 +103,35 @@ def scene_success(name: str, obs: dict) -> tuple[bool, str]:
 
 
 def evaluate_expect(expects: set[str], results: list[dict]) -> bool:
-    """--expect 语义（§46.6）。results 每项含 name/success/rca_source/submit_attempted/
-    budget_compliance。
+    """--expect 语义（§46.6 + #11 L3 spec §9）。
 
-    convergence：所有场景 budget_compliance=True（独立于场景业务成功）；
-    rca：所有场景 scene_success=True；
-    tool：B/C 中至少一个 rca_source=='tool'（真实模型非确定，不要求全中）；
-    fallback：C rca_source=='final_answer' 且 submit_attempted 为 False；
-    all：以上全部叠加。
+    results 每项含 name/success/rca_source/submit_attempted/budget_compliance/loki_contract_ok。
+    real_loki_contract 是专项场景：既有的 rca/convergence/tool/fallback/all **一律不把它算进去**
+    （避免新增场景悄悄改变既有门禁语义）；它只由 `loki_contract` 验证。
     """
     expects = set(expects)
     if not results or not expects:
         return False
+    legacy = [r for r in results if r.get("name") != "real_loki_contract"]
     if "convergence" in expects or "all" in expects:
-        if not all(r.get("budget_compliance") for r in results):
+        if not all(r.get("budget_compliance") for r in legacy):
             return False
     if "rca" in expects or "all" in expects:
-        if not all(r.get("success") for r in results):
+        if not all(r.get("success") for r in legacy):
             return False
     if "tool" in expects or "all" in expects:
-        bc = [r for r in results if r["name"] in ("error_spike_multisource", "hybrid_fallback_observation")]
+        bc = [r for r in legacy
+              if r.get("name") in ("error_spike_multisource", "hybrid_fallback_observation")]
         if not any(r.get("rca_source") == "tool" for r in bc):
             return False
     if "fallback" in expects or "all" in expects:
-        c = [r for r in results if r["name"] == "hybrid_fallback_observation"]
-        if not (c and c[0].get("rca_source") == "final_answer" and c[0].get("submit_attempted") is False):
+        c = [r for r in legacy if r.get("name") == "hybrid_fallback_observation"]
+        if not (c and c[0].get("rca_source") == "final_answer"
+                and c[0].get("submit_attempted") is False):
+            return False
+    if "loki_contract" in expects:
+        lc = [r for r in results if r.get("name") == "real_loki_contract"]
+        if not (lc and all(r.get("loki_contract_ok") for r in lc)):
             return False
     return True
 
@@ -284,6 +292,13 @@ SCENARIOS = [
         service="order-service", severity="critical",
         observed_value=None, threshold=None, target=None,
         tools=("monitoring", "logging"),
+    ),
+    dict(
+        name="real_loki_contract", kind="L",
+        title="order-service 服务异常（真实日志契约验证）",
+        service="order-service", severity="critical",
+        observed_value=None, threshold=None, target=None,
+        tools=("monitoring", "logging", "knowledge"),
     ),
 ]
 
@@ -490,6 +505,15 @@ def _fmt(obs: dict, model_name: str) -> str:
     if obs.get("kind") == "A":
         fp = a_no_false_positive_cpu(obs.get("rca"))
         lines.append(f"false_positive_cpu_evidence: {'NOT_FOUND' if fp else 'FOUND'}")
+    for c in obs.get("loki_calls") or []:
+        lines.append(f"loki_call: status={c.get('status')} success={c.get('success')} "
+                     f"result_count={c.get('result_count')} query={c.get('query')!r}"
+                     + (f" error={c.get('error')!r}" if c.get("error") else ""))
+    if obs.get("name") == "real_loki_contract":
+        corr = obs.get("evidence_correlation") or []
+        lines.append("evidence_correlation: " + (
+            ", ".join(f"{c['evidence_index']}:{c['status']}" for c in corr) or "-"))
+        lines.append(f"loki_failure_class: {classify_loki_failure(obs)}")
     if obs.get("evidence_count"):
         lines.append(f"evidence: {obs['evidence_count']} -> {sorted(obs.get('evidence_sources') or [])}")
     if obs.get("root_cause"):
