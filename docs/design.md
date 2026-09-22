@@ -2591,7 +2591,7 @@ A（负向控制）判据由"最终 INSUFFICIENT_EVIDENCE"升级为：预算内 
 V1.7 已收口"调查结果语义"（`status` / `verdict` / `rca` / `failure_code` 四轴）。剩余工作分三类：
 
 ```text
-契约收口类（V1 遗留）  F3 证据来源归属（已实现） / Loki 日志工具契约 / F4 预算强制
+契约收口类（V1 遗留）  F3 证据来源归属（已实现） / Loki 日志工具契约（已实现） / F4 预算强制
 工程保障类             Evaluation / Regression（行为可量化、可对照）
 能力扩展类（V2）       K8s / Action Gateway / Approval / Audit 闭环
 ```
@@ -2612,7 +2612,7 @@ V2 能力扩展（执行闭环）
 | 序 | 阶段 | 解决的问题 | 规模 | 依赖 | 状态 |
 |---|---|---|---|---|---|
 | 1 | F3 Provenance | evidence 来源不可信、不由契约约束 | 小～中 | 无（V1.7 遗留） | 已实现（2026-09-21） |
-| 2 | Loki / LogQL Tool Contract | L3-B/C 日志源不可用（400） | 小 | 无 | 待做 |
+| 2 | Loki / LogQL Tool Contract | L3-B/C 日志源不可用（400） | 小 | 无 | 已实现（2026-09-21） |
 | 3 | F4 Hard Budget | 软预算拦不住不确定模型 | 中 | Loki（场景完整后测） | 待做 |
 | 4 | Evaluation / Regression | 改动缺少量化对照 | 中 | F3 / Loki / F4 定稿后固化 | 待做 |
 | 5 | V2 K8s / Approval / Audit | 从诊断扩展到执行闭环 | 大 | 前四项完成 | 待做 |
@@ -2635,7 +2635,7 @@ V2 能力扩展（执行闭环）
 LLM_ERROR / TOOL_ERROR / MAX_STEPS）维持不变，既有归类 precedence 不变。已知且已接受的语义边界：
 source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `mode="after"` 模型校验器，
 故"source 非法 + confidence 缺失"归 `MISSING_EVIDENCE` 而非 `LOW_CONFIDENCE`（两层均有专门用例钉住）。
-**验证状态**：L0 **PASS**（328 passed）；L1 **PASS**（14 passed）；L2 **PASS**（3 passed，零改动，spec §7.3 冻结验证点成立）。
+**验证状态**（F3 验收时实测；#11 落地后全量增至 L0 349 / L1 15，F3 契约未受影响）：L0 **PASS**（328 passed）；L1 **PASS**（14 passed）；L2 **PASS**（3 passed，零改动，spec §7.3 冻结验证点成立）。
 
 **L3 真实 DeepSeek source 正向合规复验：PASS**（2026-09-21，B/C 场景；观测存
 `docs/l3-observations/f3-verify-2026-09-21.txt`）：`RCAResult.evidence[*].source` 穷举 **24/24** 落在
@@ -2659,7 +2659,7 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 4. prompt 与工具描述不泄漏 Python 类名/方法名，且允许值由枚举派生 —— **PASS**
 5. L2 零改动通过（spec §7.3 冻结验证点）—— **PASS**
 
-**验证状态**：
+**验证状态**（F3 验收时实测；#11 落地后全量增至 L0 349 / L1 15）：
 
 - L0：**PASS**（328 passed）
 - L1：**PASS**（14 passed）
@@ -2671,7 +2671,7 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 - F3 real-model verification = **PASS**（L3 正向合规，2026-09-21）
 - F3 overall CLOSED = **CLOSED**（2026-09-21；语义见上）
 
-## 48.3 Loki / LogQL Tool Contract（日志工具契约）
+## 48.3 Loki / LogQL Tool Contract（日志工具契约）—— 已实现（2026-09-21）
 
 **现状（实测）**：`LoggingTool.search_logs(query)` 把模型给的原始串**直接作为 LogQL** 传给 `/loki/api/v1/query_range`（`app/tools/logging.py`）。模型发送 `order-service 500 error`、`order-service`（裸串，无 `{}` 流选择器）→ **Loki 400**；工具把 httpx 异常原样回抛，模型得不到任何语法提示。模型后续自行修正为 `{service="order-service"} |= "500"` 即不再 400（返回 0 条属时序/种子数据问题）。
 
@@ -2686,6 +2686,25 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 1. L3-B/C 中 `search_logs` 不再出现 400；
 2. 至少一次**真实日志证据**进入 RCA 的 evidence 集合；
 3. L1 日志用例不回归。
+
+**实现结论**：`Settings.loki_label_keys` 是 label schema 的唯一事实源；`LoggingTool` 由它合成自身契约文案（恒定段恒呈现 + 配置段仅在有声明时附加），经 `_ToolAdapter` 恒定附加进 tool description；`prompt` 不承载该契约。Loki **拒绝查询时**（HTTP 4xx/5xx）透传状态码与原始响应体，截断 500 字符；网络错误 / 超时 / 非 JSON 仍走原有通用消息。工具不做解析、分类、改写或重试。
+
+**关键边界（不得含糊）**：
+- **契约只由 tool description 承载**（`Tool owns semantics；Adapter owns exposure`）；空配置时描述中**不得出现任何 deployment label 假设**（尤其不得内置 `app`）。
+- **`200 + result: []` 仍是成功查询**，工具不做"label 可能错了"的启发式 —— 空结果是合法事实，由模型判断。
+- **`.env` 的 `LOKI_LABEL_KEYS='["app"]'` 只属 L3 验证环境**，不是产品默认；`Settings` 默认值恒为 `[]`。
+
+**验证状态**：L0 **PASS**（349 passed）；L1 **PASS**（15，新增裸串→400 透传用例）；L2 **PASS**（3，零改动）。
+
+**Exit Criteria 逐项状态**：
+
+1. L3-B/C 中 `search_logs` 不再出现 400 —— **PENDING**（属真实模型行为，须 L3；L1 已证真实 400 响应体被完整透传，但不等于 L3 场景不再 400）
+2. 至少一次**真实日志证据**进入 RCA 的 evidence 集合 —— **PENDING**（须 L3，见下）
+3. L1 日志用例不回归 —— **PASS**（既有 3 例零改动 + 新增裸串用例通过，L1 = 15 passed）
+
+**L3 真实模型复验：PENDING** —— §48.3 Exit Criterion 2「至少一次真实日志证据进入 RCA」需真实 DeepSeek 运行，消耗 token 且需在 `.env` 配置 `LOKI_LABEL_KEYS='["app"]'`。**该步骤须用户单独确认后执行**，本阶段不得擅自执行，也不得把"代码结构上成立"写成"已验证"。
+
+**开放项（记录，未坐实）**：真实观测中模型曾用 `service` / `job` 作为 label 键而 fixture 为 `app`，并取回 0 条。这是**候选问题**；其根因（label 键不匹配 vs seed 未加载 vs 时间窗）须由 L3 复验确认，不得预先断言。
 
 ## 48.4 F4 Hard Budget（预算强制）
 

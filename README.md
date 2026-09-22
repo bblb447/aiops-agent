@@ -17,6 +17,7 @@
 - **结构化 RCA（V1.5）**：`RCAResult`（`verdict / root_cause / confidence / evidence[] / hypotheses[]`）写入 `Incident.rca`，`rca_source` 记录来源。混合收尾：首选 `submit_rca_result` 工具，兜底为 `final_answer` 中 `<rca_result>` 标签的严格 JSON，两条通道共用同一 schema 校验（`rca_source` = tool / final_answer）。无有效 RCA 不得 `ROOT_CAUSE_FOUND`；失败归因 `failure_code`（六码：NO_SUBMISSION / MISSING_EVIDENCE / LOW_CONFIDENCE / LLM_ERROR / TOOL_ERROR / MAX_STEPS）。真实模型冒烟验证见 `scripts/smoke_real_llm.py`。
 - **调查结果语义（V1.7）**：`status`（生命周期/处置）与 `verdict`（对世界的判断）拆成两轴。`verdict ∈ {ROOT_CAUSE_FOUND, NO_ANOMALY, INCONCLUSIVE}`（不含 ESCALATED）：找到根因→ROOT_CAUSE_FOUND；告警被证伪/无异常→NO_ANOMALY 直关 `RESOLVED`；证据不足可显式提交 INCONCLUSIVE（查过但不足以定论，属合法结论）。`root_cause`/`confidence` 业务必填由 verdict 条件约束，legacy（无 verdict + root_cause 非空）自动按 ROOT_CAUSE_FOUND 兼容。Tool/Final 双通道共享 RCAResult 中央校验。
 - **证据来源归属（F3）**：`EvidenceItem.source` 受域契约 `EvidenceSource` 约束（`prometheus` / `loki` / `cmdb` / `runbook`），大小写与首尾空白自动归一，语义变体（如 `query_workload`、`Prometheus Server`）被拒并返回可读错误。合法值集合**唯一来源**于 `app/incident/sources.py`，工具以 `source_type` 声明归属，agent prompt 与工具描述中的允许值均由该枚举派生。**Provenance 强度为 B（词表合规），不是 C（调用级真归属）**：本阶段只保证提交的 `source` 落在词表内，不证明某条 evidence 真的来自某次特定工具调用；`call_id` 真归属见 design.md §48.2 Future Evolution。`failure_code` 六码不变。L3 真实 DeepSeek source 正向合规复验已于 2026-09-21 通过（B/C 场景，24/24 canonical）；非法 source 的拒绝路径由 L0 覆盖，未在真实模型下演示。
+- **日志查询契约（#11）**：`search_logs` 的 `query` 必须是合法 LogQL（stream selector 需用花括号包裹，裸文本非法）；Loki 拒绝查询时工具透传 HTTP 状态码与其原始错误信息（截断至 500 字符），模型据此自行修正后重试。当前部署可用的 stream label key 由 `Settings.loki_label_keys` 声明（默认 `[]` = 未声明），经工具描述告知模型；**未声明时不呈现任何 label 假设**。工具不自动改写 query、不自动重试、不对空结果做启发式判断。
 
 ## 技术栈
 
@@ -57,13 +58,13 @@ curl -X POST localhost:8000/api/v1/incidents/{incident_id}/investigate
 运行测试（需使用项目 venv 解释器，勿用全局 Python）：
 
 ```bash
-python -m pytest   # 328 passed
+python -m pytest   # 349 passed
 ```
 
 L1 真实后端集成测试（需先运行 `tests/integration/scripts/setup_integration.ps1` 下载二进制）：
 
 ```bash
-python -m pytest -m integration tests/integration/ --ignore=tests/integration/agent   # 14 passed
+python -m pytest -m integration tests/integration/ --ignore=tests/integration/agent   # 15 passed
 ```
 
 L2 真实后端 + Scripted Agent（本地/手工；Agent 层 import smolagents，不进 L1 CI）：
