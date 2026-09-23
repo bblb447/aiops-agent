@@ -2704,7 +2704,9 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 
 **L3 真实模型复验：CLOSED（2026-09-22）** —— Exit Criterion 2 已由专项场景 `real_loki_contract` 的真实运行验证通过。
 
-**L3 方案（2026-09-22 冻结）**：专项场景 `real_loki_contract`（`tools = monitoring + logging + knowledge`，`target` 不动，**不泄漏 `app=`**）+ 受控 `--trace-out` 结构化 trace。四条 invariant：**L3-1** description 暴露 label contract（**preflight，确定性，不调模型，失败即 fail-fast**）；**L3-2** 至少一次成功 `search_logs`；**L3-3** 至少一次非空真实日志结果；**L3-4** final RCA evidence 含 `source="loki"`（L3-3 + L3-4 = Exit Criterion 2）。**L3-4b（fact 与真实日志文本相关性）是启发式 observation，永不 FAIL、不影响 exit code。** read budget / max steps / RCA 结论正确性一律为 observation，**不参与 gate**。该场景**排除在** `rca` / `convergence` / `tool` / `fallback` / `all` 之外，既有门禁语义不变。**已知观察缺口**：成功路径上生产 `ToolResult` 不携带 HTTP 状态码，故 trace 的 `loki.status` 记 `null`（本阶段以"不改生产契约"为更高优先级）。
+**L3 方案（2026-09-22 冻结）**：专项场景 `real_loki_contract`（`tools = monitoring + logging + knowledge`，`target` 不动，**不泄漏 `app=`**）+ 受控 `--trace-out` 结构化 trace。四条 invariant：**L3-1** description 暴露 label contract（**preflight，确定性，不调模型，失败即 fail-fast**）；**L3-2** 至少一次成功 `search_logs`；**L3-3** 至少一次非空真实日志结果；**L3-4** final RCA evidence 含 `source="loki"`（L3-3 + L3-4 = Exit Criterion 2）。**L3-4b（fact 与真实日志文本相关性）是启发式 observation，永不 FAIL、不影响 exit code。** read budget / max steps / RCA 结论正确性一律为 observation，**不参与 gate**。该场景**排除在** `rca` / `convergence` / `tool` / `fallback` / `all` 之外，既有门禁语义不变。
+
+**已知观察缺口**：成功路径上生产 `ToolResult` 不携带 HTTP 状态码，故 trace 的 `loki.status` 记 `null`（本阶段以"不改生产契约"为更高优先级）。
 
 **L3 执行结果（2026-09-22）**：model = `deepseek-v4-flash`；scenario = `real_loki_contract`；`LOKI_LABEL_KEYS='["app"]'` 仅属本次验证环境、**运行后已逐字节还原**；结构化 trace 存 `docs/l3-observations/l3-real-loki-contract.json`（untracked）。逐条：**L3-1 PASS**（跑前单独验证 `(True, 'preflight ok')`，早于任何 token 消耗）；**L3-2 PASS**；**L3-3 PASS**；**L3-4 PASS**；**L3-4b CORRELATED（启发式信号，非 gate，不作为验收）**。实际 Loki query = `{app="order-service"} |= "error"`；result count = `2`；`evidence[0].source = "loki"` 且其 `fact` 逐字引用返回的日志原文；evidence sources = `{loki, prometheus, runbook}`；read calls = `4 / 4`；`loki_failure_class = none`；exit code `0`。**模型没有猜 label 键** —— `app` 只可能来自 tool description 承载的契约，这正是 #11 要验证的。
 
@@ -2712,7 +2714,7 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 
 1. **本次未触发 400-recovery 路径。** 模型一次即成合法 LogQL（全程未出现 400），故按 spec §5.4 **只验证了 #11 两个行为中的第一个**；「400 → 可读错误 → 模型修正」**未被真实模型走过，仍只由 L0 覆盖**。
 2. **L3-4b 的 `CORRELATED` 是启发式 token-overlap observation，不是 gate，也不证明因果、真实性或 provenance。** 它只表示 evidence 的 `fact` 与真实返回日志之间存在词元重叠；`EvidenceItem` 没有回指原始日志行的结构化链接，「fact 来自 Loki」无法被机械证明。
-3. **只存在于当次会话控制台的运行指标**（`duration 22.6s`、`total_steps 6`、最后一步 `input 64,890 / output 3,782` token、`rca_source=tool`、`verdict=ROOT_CAUSE_FOUND`）记在 `docs/l3-observations/l3-real-loki-contract.txt`（**人工转录，非脚本自动产物**），**不得说成「trace 已验证」**；结构化 trace（`.json`）只承载 `tool_calls` / `evidence` / `loki` / `evidence_correlation` 四段，整次运行的 token 总量本次未采集。
+3. **只存在于当次会话控制台的运行指标**（`duration 22.6s`、`total_steps 6`、最后一步 `input 64,890 / output 3,782` token、`rca_source=tool`、`verdict=ROOT_CAUSE_FOUND`）记在 `docs/l3-observations/l3-real-loki-contract.txt`（**人工转录，非脚本自动产物**），**不得说成「trace 已验证」**；结构化 trace（`.json`）的四个数据段为 `tool_calls` / `evidence` / `loki` / `evidence_correlation`（另含 `scene` / `model` 两个标量元数据字段），整次运行的 token 总量本次未采集。
 
 **开放项（记录，未坐实）**：真实观测中模型曾用 `service` / `job` 作为 label 键而 fixture 为 `app`，并取回 0 条。这是**候选问题**；其根因（label 键不匹配 vs seed 未加载 vs 时间窗）须由受控对照坐实，不得预先断言。**2026-09-22 的 L3 复验与该候选方向一致**——契约暴露 `app` 后模型一次即用对，并取回 2 条真实日志（说明该次运行中 seed 已加载、键命中与否决定结果）；但本轮**未设**「不暴露 label key」的对照臂，故**该候选根因仍未坐实**。
 
