@@ -2635,7 +2635,7 @@ V2 能力扩展（执行闭环）
 LLM_ERROR / TOOL_ERROR / MAX_STEPS）维持不变，既有归类 precedence 不变。已知且已接受的语义边界：
 source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `mode="after"` 模型校验器，
 故"source 非法 + confidence 缺失"归 `MISSING_EVIDENCE` 而非 `LOW_CONFIDENCE`（两层均有专门用例钉住）。
-**验证状态**（F3 验收时实测；#11 落地后全量增至 L0 354 / L1 15，F3 契约未受影响）：L0 **PASS**（328 passed）；L1 **PASS**（14 passed）；L2 **PASS**（3 passed，零改动，spec §7.3 冻结验证点成立）。
+**验证状态**（F3 验收时实测；此后全量增长：L0 354（#11 落地后）→ **377**（L3 harness 阶段后），L1 15，F3 契约未受影响）：L0 **PASS**（328 passed）；L1 **PASS**（14 passed）；L2 **PASS**（3 passed，零改动，spec §7.3 冻结验证点成立）。
 
 **L3 真实 DeepSeek source 正向合规复验：PASS**（2026-09-21，B/C 场景；观测存
 `docs/l3-observations/f3-verify-2026-09-21.txt`）：`RCAResult.evidence[*].source` 穷举 **24/24** 落在
@@ -2659,7 +2659,7 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 4. prompt 与工具描述不泄漏 Python 类名/方法名，且允许值由枚举派生 —— **PASS**
 5. L2 零改动通过（spec §7.3 冻结验证点）—— **PASS**
 
-**验证状态**（F3 验收时实测；#11 落地后全量增至 L0 354 / L1 15）：
+**验证状态**（F3 验收时实测；此后全量增长：L0 354（#11 落地后）→ **377**（L3 harness 阶段后），L1 15）：
 
 - L0：**PASS**（328 passed）
 - L1：**PASS**（14 passed）
