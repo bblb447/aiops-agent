@@ -613,3 +613,16 @@ def test_prompt_surfaces_state_the_negative_source_clause(clause):
 
     assert clause in _DEFAULT_PROMPT
     assert clause in _load_prompt_template()
+
+
+# F4 spec §4.4：预算硬约束必须同时出现在两个 prompt 表面。
+# 断言的是语义子串（不含占位符），故断言模板原文即等价于断言渲染后的 prompt。
+REQUIRED_BUDGET_CLAUSES = ["会被拒绝", "不会执行底层查询"]
+
+
+@pytest.mark.parametrize("clause", REQUIRED_BUDGET_CLAUSES)
+def test_prompt_surfaces_state_the_hard_budget_clause(clause):
+    from app.agent.agent import _DEFAULT_PROMPT, _load_prompt_template
+
+    assert clause in _DEFAULT_PROMPT
+    assert clause in _load_prompt_template()

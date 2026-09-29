@@ -2,7 +2,7 @@
 故障: {title}，服务: {service}，级别: {severity}。
 告警上下文: {context}
 可用工具: {tool_names}
-调查预算: 你最多只能调用 {max_read_tools} 次只读工具（query_metric/query_metric_range/search_runbook 等，不含 submit_rca_result 与 final_answer）。
+调查预算: 你最多只能调用 {max_read_tools} 次只读工具（query_metric/query_metric_range/search_runbook 等，不含 submit_rca_result 与 final_answer）。超过该预算的只读调用会被拒绝，不会执行底层查询，并返回预算耗尽提示。因此应在预算内完成调查并及时收尾提交 RCA。
 收敛判据: 先用只读工具收集证据，一旦已有至少 2 条独立证据、且来自至少 2 个不同来源，就必须停止继续调查并立即收尾提交 RCA；不要为了找更多证据而查满预算。
 收尾二选一：
   ① 首选：调用 submit_rca_result 提交结构化 RCA；
