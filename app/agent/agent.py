@@ -27,6 +27,7 @@ from app.incident.sources import EvidenceSource
 from app.incident.state import transition
 from app.llm.base import LLMProvider
 from app.llm.provider import LiteLLMProvider
+from app.tools.base import ToolResult
 
 # prompts/ 位于项目根目录（本文件在 app/agent/ 下，向上三级）。
 PROMPT_FILE = Path(__file__).resolve().parent.parent.parent / "prompts" / "diagnose.txt"
@@ -93,9 +94,10 @@ class _ToolAdapter(SmolTool):
     # 跳过 forward 签名与 inputs 的强校验，参数校验交给运行时 validate_tool_arguments
     skip_forward_signature_validation = True
 
-    def __init__(self, target, method):
+    def __init__(self, target, method, budget=None):
         self._target = target
         self._method = method
+        self._budget = budget
         self.name = method.__name__
         self.inputs = self._build_inputs(method)
         self.output_type = "string"
@@ -130,12 +132,23 @@ class _ToolAdapter(SmolTool):
         return inputs
 
     def forward(self, **kwargs):
-        result = self._method(**kwargs)
-        if isinstance(result, dict):
-            return json.dumps(result, ensure_ascii=False, default=str)
-        if hasattr(result, "to_dict"):
-            return json.dumps(result.to_dict(), ensure_ascii=False, default=str)
-        return str(result)
+        # F4（spec §4.2）：超预算的只读调用一律拒绝，且**不执行**底层方法。
+        if self._budget is not None and not self._budget.consume():
+            result = ToolResult(
+                success=False, tool=self.name,
+                error=f"已达只读预算 {self._budget.limit}，请立即收尾提交 RCA",
+            )
+        else:
+            result = self._method(**kwargs)
+        return _serialize_tool_result(result)
+
+
+def _serialize_tool_result(result):
+    if isinstance(result, dict):
+        return json.dumps(result, ensure_ascii=False, default=str)
+    if hasattr(result, "to_dict"):
+        return json.dumps(result.to_dict(), ensure_ascii=False, default=str)
+    return str(result)
 
 
 def _map_type(annotation, default):
@@ -153,18 +166,18 @@ def _map_type(annotation, default):
     }.get(name, "any")
 
 
-def adapt_tools(tools: list) -> list:
+def adapt_tools(tools: list, budget=None) -> list:
     """把 Task 4 的普通 Tool 实例适配成 smolagents.Tool；已是 smolagents.Tool 的原样返回。"""
     adapted = []
     for tool in tools:
         if isinstance(tool, SmolTool):
             adapted.append(tool)
         else:
-            adapted.extend(_wrap_plain_tool(tool))
+            adapted.extend(_wrap_plain_tool(tool, budget))
     return adapted
 
 
-def _wrap_plain_tool(tool) -> list:
+def _wrap_plain_tool(tool, budget=None) -> list:
     # 优先显式白名单 exposed_methods（避免 dir() 把 refresh_cache 等辅助方法暴露给 Agent）；
     # 未声明（None）的普通对象才回退到旧 dir() 扫描（兼容外部/临时对象）；
     # 显式空白名单（[]）= 真正暴露 0 个方法，不回退。
@@ -186,8 +199,8 @@ def _wrap_plain_tool(tool) -> list:
             # 显式空白名单：真正不暴露任何方法。
             return []
         # 未声明且无公开方法：仍包一个，避免 build_agent 在空 tools 外再出问题。
-        return [_ToolAdapter(tool, _noop)]
-    return [_ToolAdapter(tool, m) for m in methods]
+        return [_ToolAdapter(tool, _noop, budget)]
+    return [_ToolAdapter(tool, m, budget) for m in methods]
 
 
 def _noop() -> str:
