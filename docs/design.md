@@ -2720,19 +2720,41 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 
 ## 48.4 F4 Hard Budget（预算强制）
 
-**现状**：`agent_max_read_tools = 4` **只经 prompt 注入**（`app/agent/agent.py`），产品侧无任何强制；L3-B 实测 `7/4` 超预算。收敛 prompt 大多生效但非总能拦住（模型非确定）。
+**现状（#11/F4 落地前实测，勿读作当前状态）**：`agent_max_read_tools = 4` **只经 prompt 注入**（`app/agent/agent.py`），产品侧无任何强制；L3-B 实测 `7/4` 超预算。收敛 prompt 大多生效但非总能拦住（模型非确定）。
 
 **目标**：预算可强制——模型不配合时由产品兜底，而非仅靠提示。
 
-**方案方向（候选）**：① **工具层计数拦截**——超预算的只读调用直接返回失败结果并提示收尾（复用现有 `ToolResult(success=False)` 降级语义，不 raise）；② **循环观察强制收尾**——在 `investigate` 循环观察只读调用计数，达上限后进入收尾通道。
+**实现结论（F4，2026-09-29）**：预算由 `app/agent/budget.py::ReadBudget` 承载，判定点位于 `_ToolAdapter.forward()` —— 超预算的只读调用在**调用底层方法之前**被短路，返回与 `ToolResult(success=False)` 同构的拒绝信封（`已达只读预算 <limit>，请立即收尾提交 RCA`）。计数单位为**实际执行的**只读调用（被拒不计数），范围为**生产侧暴露的全部只读方法（6 个：query_metric / query_metric_range / query_workload / search_logs / search_runbook / get_service）**。预算作用域 = **单次 `investigate()`**。
 
-**改动面**：`app/agent/agent.py`（循环 / 工具装配）、`app/tools/*`（计数位点）、prompt。
+**`submit_rca_result` 与 `final_answer` 不计入预算，但两者机制不同**：`SubmitRCATool`（`app/agent/submit_tool.py`）是**普通类**（走 `exposed_methods` 白名单），它**必须**经 `_ToolAdapter` 才能被 `ToolCallingAgent` 调用（否则触发 `All elements must be instance of BaseTool (or a subclass)` 断言），F4 之前就一直如此；豁免靠**显式不带预算**——`app/agent/agent.py::_compose_investigation_tools(tools, submit_tool, budget)` 返回 `[*adapt_tools(tools, budget=budget), *adapt_tools([submit_tool])]`，即 submit 以 `budget=None` 单独包装，故不消耗预算、且**预算耗尽后仍可提交**。`final_answer` 则由 smolagents 自身注入（`agents.py:402`），不经 `adapt_tools`。**（更正说明：本节初稿曾写「前者是 smolagents `Tool`、不经 `_ToolAdapter`」——该机制陈述是错的，已按 F4 Task 3 实测更正；若按错误机制把 submit 一并纳入预算，预算耗尽后首选 RCA 通道会被拒绝，违反 spec §2.1。）**
 
-**Exit Criteria**：
+计数口径：**放行即计数**；计数发生在底层工具执行之前；后续底层调用成功或失败均不影响该次预算消耗。
 
-1. L3 三场景 `budget_compliance` 全 `True`；
-2. **正常场景不多付代价**——原先能在预算内收敛的场景（A/C）不因强制而退化；
-3. L0 覆盖计数与越界行为。
+**改动面**：`app/agent/budget.py`（新增）、`app/agent/agent.py`（`_ToolAdapter` 预算短路与拒绝信封、提取 `_serialize_tool_result`、`adapt_tools` 透传 budget、新增 `_compose_investigation_tools`、`investigate()` 接线、`_DEFAULT_PROMPT`）、`prompts/diagnose.txt`、`scripts/l3_real_backend.py`（**仅**补 `_CountingCMDB` 插桩 + `make_tools` 的 `cmdb` 键）、`tests/`（新增 `test_budget.py` / `test_budget_adapter.py` / `test_budget_wiring.py`，追加 `test_agent.py` / `test_scenario_e2e.py` / `tests/scripts/test_l3_gate.py`）、本节。**`app/incident/**`、`app/tools/*`、`app/api/**`、`submit_rca_result` 契约、`SCENARIOS` 与四个场景 toolset 均零改动。**
+
+**边界（不得含糊）**：
+
+- **不撤回工具面** —— 达上限后只读工具仍在 tool schema 中可见，模型可继续尝试、每次被拒。
+- **不强制收尾** —— 模型若不听提示，**仍可能 `MAX_STEPS`**；`MAX_STEPS` 语义未变。
+- **不新增产品状态** —— 六码 failure_code 仍为 6 个、`Incident` 模型 / 状态机 / API 面零改动。预算耗尽本身不改变终态。
+- **`limit` policy**：`< 0` 构造时拒绝；`== 0` 合法且一律拒绝；`> 0` 正常。
+
+**验证状态（2026-09-29）**：L0 **PASS**（396 passed）；L1 **PASS**（15 passed）；L2 **PASS**（3 passed，零改动）。
+
+**L3 状态（2026-09-29）**：F4 的真实模型 L3 复跑**本阶段未执行** —— 它需用户单独授权（见本计划「执行阶段」，在用户明确授权前不得运行）。故本节**不声称任何 F4 真实运行证据**；上述验证状态仅覆盖 L0 / L1 / L2，原 Exit Criterion「正常场景不多付代价」**尚未由真实运行取证**。
+
+⚠️ `budget_compliance`（`read_total <= budget`）在 F4 之后**由构造保证恒真**，**不再具有判别力，不得再作为 F4 或后续阶段的验收证据**。它只可作**外部观测/回归检查**用。
+真正的硬约束证据来自 **admission guard 链**：`_ToolAdapter.forward` 在调用底层方法**之前**问 `ReadBudget.consume()` → 超额调用**不进入底层** → `ReadBudget.executed` 不增加 → 只读工具方法体一次也没被执行。该链由 L0 结构测试钉住（`tests/agent/test_budget_wiring.py`：一次只读 → 恰好一次 `consume()`；submit → 零次；`adapt_tools` 二次调用恒等）。
+
+**已知观察缺口（记录，不在 F4 修）**：拒绝发生在 adapter 层，**被拒调用不出现在 `tool_order` / `read_tool_calls` 中**，故「模型被拒了几次、是否屡拒不改、是否因此转向收尾」**不可观测**。若 Evaluation 阶段确需，再单独评估引入观察点的代价。
+
+**prompt 两表面分叉（记录，不在 F4 修）**：`PROMPT_FILE` 与 `_DEFAULT_PROMPT` 在预算条款之外存在 pre-existing 内容分叉，主要位于收尾/VERDICT/JSON 说明段；当前不影响正常文件加载路径，fallback 路径存在语义漂移风险。后续应单独统一两个 prompt surface，并增加整体一致性回归断言。
+
+**收口备注**：两个 prompt 表面的**预算条款本身已同步** —— 逐字一致（仅折行不同，语义子串整体相同），由 `tests/agent/test_agent.py::REQUIRED_BUDGET_CLAUSES`（`会被拒绝` / `不会执行底层查询`）钉住；上述分叉仅限其余段落，不涉及预算条款。
+
+**已知小项（记录）**：`tests/scripts/test_l3_gate.py` 的两个新增用例（`test_counting_cmdb_records_get_service` / `test_make_tools_supports_cmdb_kind`）会构造 `Settings()`、读取仓库根 `.env`。当前无害（`CMDBTool.__init__` 不发网络）；残余风险仅在于失败时的 repr。
+
+**Exit Criteria（重述）**：① **达限后只读调用一律被拒且底层不执行**（硬不变式 `executed_read_calls <= budget` 由构造成立，**其本身无判别力**，见上文说明）；② 6 个只读方法全部计入、`submit_rca_result` 不计入；③ 预算内收敛的场景（A/C）行为不退化（**须真实 L3 运行取证，本阶段尚未执行**）；④ L0 覆盖含边界与拒绝路径。
 
 ## 48.5 Evaluation / Regression（行为可量化与回归）
 
