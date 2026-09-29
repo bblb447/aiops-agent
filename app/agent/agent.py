@@ -15,6 +15,7 @@ from pathlib import Path
 from smolagents import ToolCallingAgent
 from smolagents.tools import Tool as SmolTool
 
+from app.agent.budget import ReadBudget
 from app.agent.final_parse import extract_rca_result
 from app.agent.submit_tool import SubmitRCATool
 from app.config import Settings
@@ -177,6 +178,16 @@ def adapt_tools(tools: list, budget=None) -> list:
     return adapted
 
 
+def _compose_investigation_tools(tools: list, submit_tool, budget) -> list:
+    """组合一次 investigate 的工具面（F4，spec §2.2/§4.3）。
+
+    只读工具共享同一个 budget；`submit_tool` 是普通对象（走 exposed_methods
+    白名单），必须经 `_ToolAdapter` 才能被 smolagents 调用，但**不得计入只读
+    预算** —— 故单独以 `budget=None` 包装，预算耗尽后它仍须可用。
+    """
+    return [*adapt_tools(tools, budget=budget), *adapt_tools([submit_tool])]
+
+
 def _wrap_plain_tool(tool, budget=None) -> list:
     # 优先显式白名单 exposed_methods（避免 dir() 把 refresh_cache 等辅助方法暴露给 Agent）；
     # 未声明（None）的普通对象才回退到旧 dir() 扫描（兼容外部/临时对象）；
@@ -226,7 +237,10 @@ def investigate(settings: Settings, svc: IncidentService,
     # 绑定本次 Incident 的 RCA 提交工具：只校验 + 存 holder，不写 Incident；
     # 最终状态由本函数作为单一事务边界统一落库（docs/design.md 第 41 章）。
     submit_tool = SubmitRCATool(svc, incident_id)
-    smol_tools = adapt_tools([*tools, submit_tool])
+    # F4（spec §2.2）：每个 Incident 一个新预算，只作用于只读工具；
+    # submit_tool 不带预算，故预算耗尽后仍可提交 RCA。
+    budget = ReadBudget(settings.agent_max_read_tools)
+    smol_tools = _compose_investigation_tools(tools, submit_tool, budget)
     agent = build_agent(settings, smol_tools)
     tool_names = [t.name for t in smol_tools]
     prompt = _load_prompt_template().format(

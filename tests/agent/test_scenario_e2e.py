@@ -12,7 +12,8 @@ from smolagents.models import ChatMessage, MessageRole, Model
 
 from app.agent.agent import investigate
 from app.config import Settings
-from app.incident.model import IncidentStatus as S
+from app.incident.codes import MAX_STEPS
+from app.incident.model import IncidentStatus as S, InvestigationVerdict
 from app.incident.service import IncidentService
 from app.tools.factory import build_tools
 
@@ -137,3 +138,78 @@ def test_e2e_final_answer_json_fallback(monkeypatch, tmp_path):
     assert got.rca.confidence == 0.72
     assert got.rca.evidence[0].fact == "cpu_usage=95.2"
     assert got.root_cause == "内存泄漏"
+
+
+def test_e2e_budget_exhaustion_keeps_existing_step_semantics(monkeypatch):
+    """spec §7.7：预算耗尽且模型仍不收尾 → 仍是既有的 MAX_STEPS 语义，不新增终态。
+
+    计划里 8 次只读调用 > max_steps 6，故模型跑到步数上限；
+    其中前 2 次（= agent_max_read_tools）真正执行，其余被拒绝。
+    """
+    monkeypatch.setattr(httpx, "get", _prometheus_fixture)
+    plan = [{"name": "query_metric",
+             "arguments": {"metric": "cpu_usage", "target": "server-01"}}] * 8
+    model = _ScriptedDiagnosisModel(plan)
+    monkeypatch.setattr("app.llm.provider.LiteLLMProvider.make_agent_model", lambda self: model)
+
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical", target="server-01")
+    s = Settings(llm_api_key="sk-test", rag_enabled=False,
+                 prometheus_url="http://prom:9090",
+                 agent_max_steps=6, agent_max_read_tools=2)
+    investigate(s, svc, inc.incident_id, tools=build_tools(s))
+
+    got = svc.get(inc.incident_id)
+    # 既有语义原样保留：六码未新增，终态仍是 ESCALATED。
+    assert got.failure_code == MAX_STEPS
+    assert got.verdict is None
+    assert got.status == S.ESCALATED
+
+    # 且预算确实生效过：模型确实收到过拒绝信封。
+    tool_text = " ".join(
+        str(m.content) for call in model.calls for m in call
+        if m.role == MessageRole.TOOL_RESPONSE
+    )
+    assert "已达只读预算" in tool_text
+
+
+def test_e2e_budget_exhaustion_still_lets_model_submit_rca(monkeypatch):
+    """spec §2.1/§7.5：只读预算耗尽后，首选的 submit_rca_result 通道仍然可用。
+
+    区分力：若 submit 也被纳入只读预算，本场景的 submit 必被拒绝，
+    rca_source 不可能是 "tool"（会退到 final_answer 兜底或 failure 路径）。
+    """
+    monkeypatch.setattr(httpx, "get", _prometheus_fixture)
+    read = {"name": "query_metric",
+            "arguments": {"metric": "cpu_usage", "target": "server-01"}}
+    plan = [
+        read, read, read,
+        {"name": "submit_rca_result", "arguments": {
+            "root_cause": "deployment_regression",
+            "confidence": 0.9,
+            "evidence": [{"source": "prometheus", "fact": "cpu_usage=95.2"}],
+        }},
+        {"name": "final_answer", "arguments": {"answer": "调查完成"}},
+    ]
+    model = _ScriptedDiagnosisModel(plan)
+    monkeypatch.setattr("app.llm.provider.LiteLLMProvider.make_agent_model", lambda self: model)
+
+    svc = IncidentService()
+    inc = svc.create("CPU 高", "order-service", "critical", target="server-01")
+    s = Settings(llm_api_key="sk-test", rag_enabled=False,
+                 prometheus_url="http://prom:9090",
+                 agent_max_steps=6, agent_max_read_tools=2)
+    investigate(s, svc, inc.incident_id, tools=build_tools(s))
+
+    got = svc.get(inc.incident_id)
+    assert got.rca_source == "tool"
+    assert got.failure_code is None
+    assert got.verdict == InvestigationVerdict.ROOT_CAUSE_FOUND
+    assert got.status == S.ROOT_CAUSE_FOUND
+
+    # 且预算确实耗尽过（第 3 次只读被拒）——否则本用例不构成"耗尽后仍可提交"的证据
+    tool_text = " ".join(
+        str(m.content) for call in model.calls for m in call
+        if m.role == MessageRole.TOOL_RESPONSE
+    )
+    assert "已达只读预算" in tool_text
