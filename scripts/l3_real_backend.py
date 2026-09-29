@@ -344,6 +344,7 @@ from app.agent.agent import investigate  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.incident.service import IncidentService  # noqa: E402
 from app.llm.provider import LiteLLMProvider  # noqa: E402
+from app.tools.cmdb import CMDBTool  # noqa: E402
 from app.tools.knowledge import KnowledgeTool  # noqa: E402
 from app.tools.logging import LoggingTool  # noqa: E402
 from app.tools.monitoring import MonitoringTool  # noqa: E402
@@ -429,6 +430,14 @@ class _CountingKnowledge(KnowledgeTool):
         return super().search_runbook(keyword)
 
 
+class _CountingCMDB(CMDBTool):
+    """只读计数子类：调用真实 CMDBTool 并记录到顺序表（不 mock、不改返回值）。"""
+
+    def get_service(self, service: str):
+        _bump_read("get_service")
+        return super().get_service(service)
+
+
 def make_tools(settings: Settings, scenario: dict) -> list:
     tools = []
     for name in scenario["tools"]:
@@ -436,6 +445,7 @@ def make_tools(settings: Settings, scenario: dict) -> list:
             "monitoring": _CountingMonitoring,
             "logging": _CountingLogging,
             "knowledge": _CountingKnowledge,
+            "cmdb": _CountingCMDB,
         }[name](settings))
     return tools
 

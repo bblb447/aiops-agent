@@ -545,3 +545,31 @@ def test_build_trace_does_not_alias_observation_lists():
     obs["evidence_correlation"].append({"evidence_index": 0})
     assert len(trace["loki"]) == 1
     assert trace["evidence_correlation"] == []
+
+
+def test_counting_cmdb_records_get_service(monkeypatch):
+    import scripts.l3_real_backend as m
+    from app.tools.base import ToolResult as TR
+
+    monkeypatch.setattr(m.CMDBTool, "get_service",
+                        lambda self, service: TR(success=True, tool="get_service"))
+    m._READ_ORDER.clear()
+    m._FULL_ORDER.clear()
+    m._CountingCMDB(m.Settings()).get_service("order-service")
+    assert m._READ_ORDER == ["get_service"]
+    assert m._FULL_ORDER == ["get_service"]
+
+
+def test_make_tools_supports_cmdb_kind():
+    import scripts.l3_real_backend as m
+
+    tools = m.make_tools(m.Settings(), {"tools": ("cmdb",)})
+    assert [type(t).__name__ for t in tools] == ["_CountingCMDB"]
+
+
+def test_scenarios_still_exclude_cmdb():
+    # spec §12.3：只补插桩，不得为 F4 修改既有场景。
+    import scripts.l3_real_backend as m
+
+    for scene in m.SCENARIOS:
+        assert "cmdb" not in scene["tools"], scene["name"]
