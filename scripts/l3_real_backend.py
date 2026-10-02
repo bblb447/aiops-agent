@@ -539,6 +539,75 @@ def validate_baseline(data, known_scenes=KNOWN_SCENES) -> list:
     return errors
 
 
+# 派生 observation：不在 obs 中直接存在、需由既有纯函数导出的字段。
+DERIVED_OBS = {
+    "loki_failure_class": classify_loki_failure,
+}
+
+
+def _observation_value(obs, key):
+    if key in obs:
+        v = obs[key]
+    else:
+        fn = DERIVED_OBS.get(key)
+        v = fn(obs) if fn is not None else None
+    if isinstance(v, (set, frozenset)):
+        return sorted(v)
+    return v
+
+
+def _eval_field(item, obs):
+    """字段约束求值 → (result, detail)。字段不存在 → UNOBSERVED；存在但 null 且要具体值 → FAIL。"""
+    field = item["field"]
+    if field not in obs:
+        return "UNOBSERVED", f"字段 {field} 不在 observation 中"
+    actual = obs[field]
+    if actual is None and item["op"] != "exists":
+        return "FAIL", f"{field}=null 不满足 {item['op']} {item.get('value')!r}"
+    ok = OPS[item["op"]](actual, item.get("value"))
+    return ("PASS" if ok else "FAIL"), f"{field}={actual!r} {item['op']} {item.get('value')!r}"
+
+
+def compare_run(baseline, obs_by_scene) -> dict:
+    """对 declarative baseline 做三态比较。coverage 与三态是两个独立维度。"""
+    scenes = baseline.get("scenarios") or {}
+    out: list = []
+    for name, scene in scenes.items():
+        obs = obs_by_scene.get(name)
+        entry = {"name": name, "kind": scene.get("kind"), "coverage": "covered",
+                 "constraints": [], "observations": {}}
+        for f in scene.get("fields") or []:
+            if obs is None:
+                entry["constraints"].append(
+                    {"id": f["id"], "result": "UNOBSERVED", "detail": "本轮未运行"})
+            else:
+                result, detail = _eval_field(f, obs)
+                entry["constraints"].append({"id": f["id"], "result": result, "detail": detail})
+        for c in scene.get("checks") or []:
+            if obs is None:
+                entry["constraints"].append(
+                    {"id": c["id"], "result": "UNOBSERVED", "detail": "本轮未运行"})
+                continue
+            if not REQUIRES[c["requires"]](obs):
+                entry["constraints"].append(
+                    {"id": c["id"], "result": "UNOBSERVED",
+                     "detail": f"缺少 {c['requires']}"})
+                continue
+            ok, reason = CHECKS[c["fn"]](obs)
+            entry["constraints"].append({
+                "id": c["id"], "result": "PASS" if ok == c["expect"] else "FAIL",
+                "detail": reason or ""})
+        if obs is not None:
+            entry["observations"] = {
+                k: _observation_value(obs, k) for k in (scene.get("observation_only") or [])}
+        out.append(entry)
+    for name, obs in obs_by_scene.items():
+        if name not in scenes:
+            out.append({"name": name, "kind": obs.get("kind"), "coverage": "not covered",
+                        "constraints": [], "observations": {}})
+    return {"scenarios": out}
+
+
 # 脚本层插桩（权威）：_READ_ORDER 只含只读工具调用（预算计数基础）；
 # _FULL_ORDER 含只读 + submit（供 tool_order 展示整段轨迹）。
 _READ_ORDER: list[str] = []
