@@ -38,6 +38,20 @@ def test_load_baseline_missing_file_raises(tmp_path):
         load_baseline(tmp_path / "nope.json")
 
 
+def test_load_baseline_directory_raises(tmp_path):
+    # 误把路径指向目录 → IsADirectoryError（OSError）：必须是 BaselineConfigError 而非 traceback。
+    with pytest.raises(BaselineConfigError):
+        load_baseline(tmp_path)
+
+
+def test_load_baseline_non_utf8_raises(tmp_path):
+    # 非 UTF-8 内容（如中文 Windows 上的 GBK 文件）→ UnicodeDecodeError：须归一为配置错误。
+    p = tmp_path / "b.json"
+    p.write_bytes(b'\xff\xfe{"a":1}')
+    with pytest.raises(BaselineConfigError):
+        load_baseline(p)
+
+
 def test_load_baseline_bad_json_raises(tmp_path):
     p = tmp_path / "b.json"
     p.write_text("{ not json", encoding="utf-8")
@@ -249,6 +263,8 @@ def test_format_report_shows_scene_success_separately():
                                   {"error_spike_multisource": obs})
     assert "coverage: covered" in text
     assert "scene_success:" in text
+    # spec §9 ① / docs/design.md §48.5：报告必须发出 baseline_validation 状态头（恒 PASS）。
+    assert "baseline_validation: PASS" in text
     assert "overall" not in text.lower()
 
 
@@ -281,4 +297,10 @@ def test_main_returns_config_error_on_broken_baseline(tmp_path):
 
 def test_main_returns_config_error_on_missing_baseline(tmp_path):
     rc = main(["--compare", "--baseline", str(tmp_path / "nope.json")])
+    assert rc == EXIT_BASELINE_CONFIG_ERROR
+
+
+def test_main_returns_config_error_on_directory_baseline(tmp_path):
+    # baseline 加载/校验发生在 settings/backend 探测之前，故本测试离线即可返回 5（非 traceback、非 1）。
+    rc = main(["--compare", "--baseline", str(tmp_path)])
     assert rc == EXIT_BASELINE_CONFIG_ERROR

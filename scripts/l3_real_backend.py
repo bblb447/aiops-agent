@@ -467,10 +467,16 @@ def load_baseline(path=None) -> dict:
     p = Path(path) if path is not None else BASELINE_PATH
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except FileNotFoundError as e:
-        raise BaselineConfigError(f"baseline 文件不存在：{p}") from e
     except json.JSONDecodeError as e:
+        # JSONDecodeError 是 ValueError 子类（非 OSError），须单独成句。
         raise BaselineConfigError(f"baseline 非合法 JSON：{p}：{e}") from e
+    except (OSError, UnicodeDecodeError) as e:
+        # OSError 覆盖 FileNotFoundError/IsADirectoryError/PermissionError（路径不存在、
+        # 误指目录、无权限）；UnicodeDecodeError 覆盖非 UTF-8 内容（如中文 Windows 主机
+        # 上的 GBK 文件）。spec §8：无法加载 JSON 一律属配置错误 → exit 5，绝不泄漏原始
+        # traceback。两类都归一到同一 BaselineConfigError 路径。
+        raise BaselineConfigError(
+            f"baseline 无法读取：{p}：{type(e).__name__}: {e}") from e
 
 
 def _validate_id(item, ids, label, name, errors):
@@ -622,7 +628,13 @@ def compare_exit_code(report, strict=False) -> int:
 def format_baseline_report(report, obs_by_scene=None) -> str:
     """baseline 与 scene_success 并列展示；不生成 overall。"""
     obs_by_scene = obs_by_scene or {}
-    lines = ["==== Evaluation baseline（declarative）===="]
+    lines = [
+        "==== Evaluation baseline（declarative）====",
+        # baseline_validation 恒为 PASS（spec §9 ①）：配置错误（文件不可读 / 非 UTF-8 /
+        # 非法 JSON / schema 不合法）都在 main() 中于任何报告打印之前以 exit 5 返回，故
+        # 报告能存在 ⇒ 校验必已通过。这是**状态头**而非可区分的检查项，不得当作行为证据。
+        "baseline_validation: PASS",
+    ]
     for s in report.get("scenarios", []):
         lines.append(f"scene {s['name']} [{s.get('kind')}]  coverage: {s['coverage']}")
         if s["coverage"] == "covered":
