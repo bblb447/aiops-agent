@@ -608,6 +608,64 @@ def compare_run(baseline, obs_by_scene) -> dict:
     return {"scenarios": out}
 
 
+def compare_exit_code(report, strict=False) -> int:
+    """0 = 无 FAIL（且非 strict-UNOBSERVED）；1 = 有 FAIL 或 strict 下有 UNOBSERVED。"""
+    results = [c["result"] for s in report.get("scenarios", [])
+               for c in s.get("constraints", [])]
+    if any(r == "FAIL" for r in results):
+        return 1
+    if strict and any(r == "UNOBSERVED" for r in results):
+        return 1
+    return 0
+
+
+def format_baseline_report(report, obs_by_scene=None) -> str:
+    """baseline 与 scene_success 并列展示；不生成 overall。"""
+    obs_by_scene = obs_by_scene or {}
+    lines = ["==== Evaluation baseline（declarative）===="]
+    for s in report.get("scenarios", []):
+        lines.append(f"scene {s['name']} [{s.get('kind')}]  coverage: {s['coverage']}")
+        if s["coverage"] == "covered":
+            obs = obs_by_scene.get(s["name"])
+            if obs is None:
+                lines.append("  scene_success: UNOBSERVED (no runtime observation)")
+            else:
+                # 仅调用既有纯函数，不改其语义。
+                ok, _reason = scene_success(s["name"], obs)
+                lines.append(f"  scene_success: {'PASS' if ok else 'FAIL'}")
+        for c in s.get("constraints", []):
+            tail = f"  ({c['detail']})" if c.get("detail") else ""
+            lines.append(f"  {c['id']}: {c['result']}{tail}")
+        for k, v in (s.get("observations") or {}).items():
+            lines.append(f"  observation {k} = {v!r}")
+    return "\n".join(lines)
+
+
+SNAPSHOT_FIELDS = (
+    "read_tool_calls", "budget", "total_steps", "duration", "rca_source",
+    "submit_attempted", "submit_last_validation_code", "status", "verdict",
+    "failure_code", "evidence_count", "evidence_sources",
+    "budget_compliance", "budget_exhausted",
+)
+
+
+def build_snapshot(results) -> list:
+    """脱敏 runtime snapshot：仅白名单标量/结构字段；loki_calls 仅留 success/status/result_count。"""
+    out: list = []
+    for obs in results:
+        snap = {"name": obs.get("name"), "kind": obs.get("kind")}
+        for k in SNAPSHOT_FIELDS:
+            v = obs.get(k)
+            snap[k] = sorted(v) if isinstance(v, (set, frozenset)) else v
+        snap["loki_calls"] = [
+            {"success": c.get("success"), "status": c.get("status"),
+             "result_count": c.get("result_count")}
+            for c in (obs.get("loki_calls") or [])
+        ]
+        out.append(snap)
+    return out
+
+
 # 脚本层插桩（权威）：_READ_ORDER 只含只读工具调用（预算计数基础）；
 # _FULL_ORDER 含只读 + submit（供 tool_order 展示整段轨迹）。
 _READ_ORDER: list[str] = []
@@ -874,10 +932,31 @@ def main(argv=None) -> int:
     parser.add_argument("--expect", action="append", default=[],
                         choices=["rca", "convergence", "tool", "fallback", "all", "loki_contract"],
                         help="可选门禁（默认只观测不失败）")
+    parser.add_argument("--compare", action="store_true",
+                        help="对 declarative baseline 做三态对照（默认 tests/baselines/l3_declarative_baseline.json）")
+    parser.add_argument("--baseline", default=None, metavar="PATH",
+                        help="覆盖 baseline 文件路径（仅与 --compare 合用）")
+    parser.add_argument("--baseline-out", default=None, metavar="PATH",
+                        help="写脱敏 runtime snapshot（不写则跳过）")
+    parser.add_argument("--strict", action="store_true",
+                        help="让 UNOBSERVED 也导致非零退出（仅与 --compare 合用）")
     parser.add_argument("--trace-out", default=None, metavar="PATH",
                         help="额外写结构化 JSON trace 到 PATH（默认不写，spec §7.1）")
     parser.add_argument("scene", nargs="*", help="场景名子串过滤（如 cpu / error / hybrid）")
     args = parser.parse_args(argv)
+
+    baseline = None
+    if args.compare:
+        try:
+            baseline = load_baseline(args.baseline)
+        except BaselineConfigError as e:
+            print(str(e))
+            return EXIT_BASELINE_CONFIG_ERROR
+        _errors = validate_baseline(baseline)
+        if _errors:
+            for e in _errors:
+                print(f"baseline error: {e}")
+            return EXIT_BASELINE_CONFIG_ERROR
 
     settings = Settings()
     if not settings.llm_api_key:
@@ -926,6 +1005,13 @@ def main(argv=None) -> int:
                                     ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"trace written: {_path}\n")
 
+    if args.baseline_out:
+        _snap = build_snapshot(results)
+        _sp = Path(args.baseline_out)
+        _sp.parent.mkdir(parents=True, exist_ok=True)
+        _sp.write_text(json.dumps(_snap, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"snapshot written: {_sp}\n")
+
     print(_summary(results, settings.llm_model))
     for obs in results:
         ok, _reason = scene_success(obs["name"], obs)
@@ -934,19 +1020,26 @@ def main(argv=None) -> int:
               f"status={obs.get('status')}")
 
     expects = set(args.expect)
-    if not expects:
-        return 0  # 默认只观测，不因模型行为判失败。
-    proj = [{
-        "name": o["name"],
-        "success": scene_success(o["name"], o)[0],
-        "rca_source": o.get("rca_source"),
-        "submit_attempted": o.get("submit_attempted"),
-        "budget_compliance": o.get("budget_compliance"),
-        "loki_contract_ok": loki_contract_success(o)[0],
-    } for o in results]
-    passed = evaluate_expect(expects, proj)
-    print(f"--expect {sorted(expects)} -> {'PASS' if passed else 'FAIL'}")
-    return 0 if passed else 1
+    rc = 0
+    if expects:
+        proj = [{
+            "name": o["name"],
+            "success": scene_success(o["name"], o)[0],
+            "rca_source": o.get("rca_source"),
+            "submit_attempted": o.get("submit_attempted"),
+            "budget_compliance": o.get("budget_compliance"),
+            "loki_contract_ok": loki_contract_success(o)[0],
+        } for o in results]
+        passed = evaluate_expect(expects, proj)
+        print(f"--expect {sorted(expects)} -> {'PASS' if passed else 'FAIL'}")
+        if not passed:
+            rc = 1
+    if args.compare:
+        obs_by_scene = {o["name"]: o for o in results}
+        rep = compare_run(baseline, obs_by_scene)
+        print(format_baseline_report(rep, obs_by_scene))
+        rc = max(rc, compare_exit_code(rep, args.strict))
+    return rc
 
 
 if __name__ == "__main__":

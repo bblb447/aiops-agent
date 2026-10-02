@@ -213,3 +213,72 @@ def test_observation_normalizes_set_to_sorted_list():
     rep = compare_run(b, {"error_spike_multisource": _obs(
         evidence_sources={"loki", "prometheus"})})
     assert rep["scenarios"][0]["observations"]["evidence_sources"] == ["loki", "prometheus"]
+
+
+from scripts.l3_real_backend import (  # noqa: E402
+    EXIT_BASELINE_CONFIG_ERROR,
+    build_snapshot,
+    compare_exit_code,
+    format_baseline_report,
+    main,
+)
+from scripts.l3_real_backend import SNAPSHOT_FIELDS  # noqa: E402
+
+
+def _rep(result):
+    return {"scenarios": [{"name": "error_spike_multisource", "kind": "B",
+                           "coverage": "covered",
+                           "constraints": [{"id": "x", "result": result, "detail": ""}],
+                           "observations": {}}]}
+
+
+@pytest.mark.parametrize("result,strict,expected", [
+    ("PASS", False, 0),
+    ("UNOBSERVED", False, 0),
+    ("UNOBSERVED", True, 1),
+    ("FAIL", False, 1),
+    ("FAIL", True, 1),
+])
+def test_compare_exit_code(result, strict, expected):
+    assert compare_exit_code(_rep(result), strict) == expected
+
+
+def test_format_report_shows_scene_success_separately():
+    obs = _obs()
+    text = format_baseline_report(compare_run(BSC, {"error_spike_multisource": obs}),
+                                  {"error_spike_multisource": obs})
+    assert "coverage: covered" in text
+    assert "scene_success:" in text
+    assert "overall" not in text.lower()
+
+
+def test_snapshot_excludes_forbidden_content():
+    obs = _obs(root_cause="SECRET MODEL TEXT",
+               evidence=[_E("loki", "SECRET LOG LINE")])
+    obs["loki_calls"] = [{"query": 'SECRET QUERY {app="x"}', "logs": ["SECRET LOG LINE"],
+                          "success": True, "status": None, "result_count": 2}]
+    snap = build_snapshot([obs])[0]
+    raw = json.dumps(snap, ensure_ascii=False)
+    assert "SECRET" not in raw
+    assert "root_cause" not in snap
+    assert "query" not in raw
+    assert "logs" not in raw
+    assert snap["loki_calls"] == [{"success": True, "status": None, "result_count": 2}]
+
+
+def test_snapshot_fields_are_exactly_the_allowlist():
+    snap = build_snapshot([_obs()])[0]
+    assert set(snap) == {"name", "kind", "loki_calls"} | set(SNAPSHOT_FIELDS)
+
+
+def test_main_returns_config_error_on_broken_baseline(tmp_path):
+    bad = tmp_path / "b.json"
+    bad.write_text('{"schema_version": 1, "matrix": "l3-4-scenarios", "scenarios": {}}'
+                   .replace("l3-4-scenarios", "wrong"), encoding="utf-8")
+    rc = main(["--compare", "--baseline", str(bad)])
+    assert rc == EXIT_BASELINE_CONFIG_ERROR
+
+
+def test_main_returns_config_error_on_missing_baseline(tmp_path):
+    rc = main(["--compare", "--baseline", str(tmp_path / "nope.json")])
+    assert rc == EXIT_BASELINE_CONFIG_ERROR
