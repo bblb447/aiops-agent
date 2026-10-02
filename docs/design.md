@@ -2613,8 +2613,8 @@ V2 能力扩展（执行闭环）
 |---|---|---|---|---|---|
 | 1 | F3 Provenance | evidence 来源不可信、不由契约约束 | 小～中 | 无（V1.7 遗留） | 已实现（2026-09-21） |
 | 2 | Loki / LogQL Tool Contract | L3-B/C 日志源不可用（400） | 小 | 无 | 已实现（2026-09-21） |
-| 3 | F4 Hard Budget | 软预算拦不住不确定模型 | 中 | Loki（场景完整后测） | 待做 |
-| 4 | Evaluation / Regression | 改动缺少量化对照 | 中 | F3 / Loki / F4 定稿后固化 | 待做 |
+| 3 | F4 Hard Budget | 软预算拦不住不确定模型 | 中 | Loki（场景完整后测） | 已实现（ACCEPTED 2026-10-02） |
+| 4 | Evaluation / Regression | 改动缺少量化对照 | 中 | F3 / Loki / F4 定稿后固化 | 第一部分已实现（2026-10-02） |
 | 5 | V2 K8s / Approval / Audit | 从诊断扩展到执行闭环 | 大 | 前四项完成 | 待做 |
 
 第 1、2 项相互独立，可并行；3、4、5 严格串行。
@@ -2775,6 +2775,51 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 1. 可对同一 Scenario Matrix 输出"改前 / 改后"结构化差异；
 2. 基线可提交且不含敏感原文；
 3. F3 / Loki / F4 的 Exit Criteria 可用该基线复现验证。
+
+**实现结论（2026-10-02，L3 Declarative Baseline，第一部分）**：baseline 的**唯一权威**是 committed 的
+`tests/baselines/l3_declarative_baseline.json`（**只含约束、不含任何运行数值**）；
+`scripts/l3_real_backend.py` 只**加载 / 校验 / 解释**它（**不内嵌第二份常量**）。判定为纯函数：
+`load_baseline` / `validate_baseline` / `compare_run` / `compare_exit_code` / `build_snapshot` /
+`format_baseline_report`，离线可由 L0 直测。
+
+**三层语义（严格分离，不得互相混用）**：`constraint` 词表**只有** `PASS` / `FAIL` / `UNOBSERVED`；
+`coverage` 只有 `covered` / `not covered`；`baseline_validation` 只有 `PASS` / `FAIL`。
+
+**三态规则**：场景本轮未运行 → 约束一律 `UNOBSERVED`；`checks[].requires` 所指 artifact 缺失或为
+`None` → `UNOBSERVED`（**不复用 check 函数自身的 `None → True` 兜底**）；字段不存在 → `UNOBSERVED`；
+字段存在但为 `null` 而约束要求具体值 → `FAIL`。**「无真实运行证据」≠「不满足不变量」。**
+
+**配置错误**：未知 `op` / 未注册 `fn` / 未知 `requires` / 未知场景 / 非法 `kind` /
+`schema_version` 或 `matrix` 不符 / 必需键缺失 / `id` 重复 → **exit code 5**；
+**绝不**降级为 `UNOBSERVED`。
+
+**CLI**：`--compare`（开关，默认读上述 committed 文件）／`--baseline PATH`／
+`--baseline-out PATH`（脱敏 snapshot）／`--strict`（让 `UNOBSERVED` 也非零退出）。
+退出码 `0`（无 FAIL）／`1`（有 FAIL，或 strict 下有 UNOBSERVED）／`5`（配置错误）。
+（`--compare [PATH]` 因与既有位置参数 `scene` 的 argparse 歧义，实施时改为 `--compare` + `--baseline PATH`。）
+
+**与 `scene_success()` 的关系 = 互补并存**：`scene_success()` / `--expect` **完全冻结、零改动**；
+两套结果**并列**展示，**不生成 `overall`**。已知**有意差异**：B 的 `contains (⊇)` vs `==`；
+C 的 final fallback 路径（baseline 仅作 observation）；A 的 `verdict` / `status`（baseline 仅作 observation）；
+`system_error` 归属 `scene_success()`。`budget_compliance` **全局 `observation_only`**（F4 后恒真、无判别力）。
+
+**脱敏**：`--baseline-out` 只写白名单标量/结构字段；**丢弃**模型原文（`root_cause`）、
+`evidence[].fact`、Loki `logs` 正文、`query` 字符串。
+
+**验证状态（2026-10-02）**：L0 **PASS**（439 passed）。
+改动面 = `scripts/l3_real_backend.py` + `tests/baselines/l3_declarative_baseline.json` +
+`tests/scripts/test_l3_baseline.py`；**`app/` 零改动**、`scene_success()` 零改动、
+`tests/scripts/test_l3_gate.py` 零改动。
+
+**Exit Criteria 逐项状态**：
+1. 可对同一 Scenario Matrix 输出「改前 / 改后」结构化差异 —— **机制已实现**（`--compare` 对 committed
+   baseline 逐条三态）；**真实「改前/改后」差异未取证**（需两次授权真实运行）。
+2. 基线可提交且不含敏感原文 —— **PASS**（committed baseline 只含约束；snapshot 走脱敏白名单）。
+3. F3 / Loki / F4 的 Exit Criteria 可用该基线复现验证 —— **部分实现**：关键判据已编码为可判定约束
+   （F3 source 归属、Loki contract、F4 预算字段作 observation）；但**真实运行复现仍为 `UNOBSERVED`**
+   （本轮未跑真实 L3）。
+
+**不得读作**：F3 / Loki / F4 的真实运行已被复现验证；也不得读作 Evaluation / Regression 已整体完成。
 
 ## 48.6 V2 K8s / Approval / Audit（能力扩展）
 
