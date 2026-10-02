@@ -2806,7 +2806,7 @@ C 的 final fallback 路径（baseline 仅作 observation）；A 的 `verdict` /
 **脱敏**：`--baseline-out` 只写白名单标量/结构字段；**丢弃**模型原文（`root_cause`）、
 `evidence[].fact`、Loki `logs` 正文、`query` 字符串。
 
-**验证状态（2026-10-02）**：L0 **PASS**（439 passed）。
+**验证状态（2026-10-02）**：L0 **PASS**（442 passed）。
 改动面 = `scripts/l3_real_backend.py` + `tests/baselines/l3_declarative_baseline.json` +
 `tests/scripts/test_l3_baseline.py`；**`app/` 零改动**、`scene_success()` 零改动、
 `tests/scripts/test_l3_gate.py` 零改动。
