@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "matrix": "l3-4-scenarios",
+  "scenarios": {
+    "cpu_alert_negative_control": {
+      "kind": "A",
+      "fields": [],
+      "checks": [
+        {"id": "no-fabricated-cpu", "fn": "a_no_false_positive_cpu", "requires": "rca", "expect": true}
+      ],
+      "observation_only": [
+        "verdict", "status", "read_tool_calls", "budget_compliance", "total_steps",
+        "duration", "rca_source", "submit_attempted", "evidence_sources", "tool_order"
+      ]
+    },
+    "error_spike_multisource": {
+      "kind": "B",
+      "fields": [
+        {"id": "rca-valid", "field": "rca_valid", "op": "equals", "value": true},
+        {"id": "terminal-status", "field": "status", "op": "equals", "value": "ROOT_CAUSE_FOUND"},
+        {"id": "required-sources", "field": "evidence_sources", "op": "contains", "value": ["prometheus", "loki"]}
+      ],
+      "checks": [],
+      "observation_only": [
+        "read_tool_calls", "budget_compliance", "total_steps", "duration",
+        "rca_source", "submit_attempted", "tool_order"
+      ]
+    },
+    "hybrid_fallback_observation": {
+      "kind": "C",
+      "fields": [
+        {"id": "rca-valid", "field": "rca_valid", "op": "equals", "value": true},
+        {"id": "terminal-status", "field": "status", "op": "equals", "value": "ROOT_CAUSE_FOUND"}
+      ],
+      "checks": [],
+      "observation_only": [
+        "rca_source", "submit_attempted", "read_tool_calls", "budget_compliance",
+        "total_steps", "duration", "tool_order"
+      ]
+    },
+    "real_loki_contract": {
+      "kind": "L",
+      "fields": [
+        {"id": "loki-evidence", "field": "evidence_sources", "op": "contains", "value": ["loki"]}
+      ],
+      "checks": [
+        {"id": "loki-contract", "fn": "loki_contract_success", "requires": "obs", "expect": true}
+      ],
+      "observation_only": [
+        "loki_failure_class", "budget_exhausted", "evidence_correlation", "rca_source",
+        "read_tool_calls", "budget_compliance", "total_steps", "duration", "tool_order"
+      ]
+    }
+  }
+}

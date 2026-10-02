@@ -13,6 +13,7 @@
 exit code：缺 .env LLM key=2；backend 不可达=3；默认只观测=0（除非未捕获异常/系统错误）；
 --expect 显式不满足=1。
 """
+import json
 import os
 import re
 import sys
@@ -385,6 +386,159 @@ SCENARIOS = [
     ),
 ]
 
+# ===== Evaluation / Regression：L3 Declarative Baseline =====
+# spec: docs/superpowers/specs/2026-10-02-evaluation-regression-design.md
+# baseline 的唯一权威是 committed JSON；此处只加载 / 校验 / 解释，不内嵌第二份常量。
+
+BASELINE_PATH = ROOT / "tests" / "baselines" / "l3_declarative_baseline.json"
+BASELINE_MATRIX = "l3-4-scenarios"
+BASELINE_SCHEMA_VERSION = 1
+KNOWN_SCENES = tuple(s["name"] for s in SCENARIOS)
+KNOWN_KINDS = ("A", "B", "C", "L")
+EXIT_BASELINE_CONFIG_ERROR = 5
+
+
+class BaselineConfigError(Exception):
+    """baseline 文件 / schema 配置错误（绝不降级为 UNOBSERVED）。"""
+
+
+def _op_equals(actual, expected):
+    return actual == expected
+
+
+def _op_in(actual, expected):
+    return actual in expected
+
+
+def _op_contains(actual, expected):
+    return set(expected) <= set(actual or [])
+
+
+def _op_equals_set(actual, expected):
+    return set(actual or []) == set(expected)
+
+
+def _op_exists(actual, expected):
+    return actual is not None
+
+
+def _op_max(actual, expected):
+    return actual is not None and actual <= expected
+
+
+def _op_min(actual, expected):
+    return actual is not None and actual >= expected
+
+
+OPS = {
+    "equals": _op_equals,
+    "in": _op_in,
+    "contains": _op_contains,
+    "equals_set": _op_equals_set,
+    "exists": _op_exists,
+    "max": _op_max,
+    "min": _op_min,
+}
+
+
+def _check_no_false_positive_cpu(obs):
+    ok = a_no_false_positive_cpu(obs.get("rca"))
+    return ok, "" if ok else "false positive cpu evidence"
+
+
+def _check_loki_contract(obs):
+    return loki_contract_success(obs)
+
+
+# 有限 registry：JSON 只能引用这里显式注册的名字。
+CHECKS = {
+    "a_no_false_positive_cpu": _check_no_false_positive_cpu,
+    "loki_contract_success": _check_loki_contract,
+}
+
+# requires → 该 runtime artifact 是否可得；不可得则该 check 为 UNOBSERVED（不调用 check）。
+REQUIRES = {
+    "rca": lambda obs: obs.get("rca") is not None,
+    "obs": lambda obs: True,
+}
+
+
+def load_baseline(path=None) -> dict:
+    p = Path(path) if path is not None else BASELINE_PATH
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError as e:
+        raise BaselineConfigError(f"baseline 文件不存在：{p}") from e
+    except json.JSONDecodeError as e:
+        raise BaselineConfigError(f"baseline 非合法 JSON：{p}：{e}") from e
+
+
+def _validate_id(item, ids, label, name, errors):
+    i = item.get("id")
+    if not isinstance(i, str) or not i:
+        errors.append(f"{name}: {label}[].id 必须是非空字符串")
+        return
+    if i in ids:
+        errors.append(f"{name}: 重复 id {i!r}")
+    else:
+        ids.add(i)
+
+
+def validate_baseline(data, known_scenes=KNOWN_SCENES) -> list:
+    """返回错误字符串列表；空列表 = 合法。未知 op/fn/requires/场景一律属配置错误。"""
+    errors: list = []
+    if not isinstance(data, dict):
+        return ["baseline 顶层必须是对象"]
+    if data.get("schema_version") != BASELINE_SCHEMA_VERSION:
+        errors.append(f"schema_version 必须为 {BASELINE_SCHEMA_VERSION}")
+    if data.get("matrix") != BASELINE_MATRIX:
+        errors.append(f"matrix 必须为 {BASELINE_MATRIX!r}")
+    scenarios = data.get("scenarios")
+    if not isinstance(scenarios, dict):
+        errors.append("scenarios 必须是对象")
+        return errors
+    known = set(known_scenes)
+    for name, scene in scenarios.items():
+        if name not in known:
+            errors.append(f"未知场景：{name!r}")
+            continue
+        if not isinstance(scene, dict):
+            errors.append(f"{name}: 场景必须是对象")
+            continue
+        if scene.get("kind") not in KNOWN_KINDS:
+            errors.append(f"{name}: kind 必须属于 {KNOWN_KINDS}")
+        for key in ("fields", "checks", "observation_only"):
+            if not isinstance(scene.get(key), list):
+                errors.append(f"{name}: {key} 必须是数组")
+        ids: set = set()
+        for f in scene.get("fields") or []:
+            if not isinstance(f, dict):
+                errors.append(f"{name}: fields 项必须是对象")
+                continue
+            _validate_id(f, ids, "fields", name, errors)
+            if not isinstance(f.get("field"), str):
+                errors.append(f"{name}: fields[].field 必须是字符串")
+            if f.get("op") not in OPS:
+                errors.append(f"{name}: 未知 op {f.get('op')!r}")
+            if "value" not in f:
+                errors.append(f"{name}: fields[{f.get('id')!r}] 缺少 value")
+        for c in scene.get("checks") or []:
+            if not isinstance(c, dict):
+                errors.append(f"{name}: checks 项必须是对象")
+                continue
+            _validate_id(c, ids, "checks", name, errors)
+            if c.get("fn") not in CHECKS:
+                errors.append(f"{name}: 未注册 fn {c.get('fn')!r}")
+            if c.get("requires") not in REQUIRES:
+                errors.append(f"{name}: 未知 requires {c.get('requires')!r}")
+            if "expect" not in c:
+                errors.append(f"{name}: checks[{c.get('id')!r}] 缺少 expect")
+        for o in scene.get("observation_only") or []:
+            if not isinstance(o, str):
+                errors.append(f"{name}: observation_only 项必须是字符串")
+    return errors
+
+
 # 脚本层插桩（权威）：_READ_ORDER 只含只读工具调用（预算计数基础）；
 # _FULL_ORDER 含只读 + submit（供 tool_order 展示整段轨迹）。
 _READ_ORDER: list[str] = []
@@ -583,7 +737,6 @@ def _run_scenario(scenario: dict) -> dict:
 
 
 import argparse  # noqa: E402
-import json  # noqa: E402
 
 import httpx  # noqa: E402
 
