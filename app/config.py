@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     loki_url: str = ""
     cmdb_url: str = ""
 
+    k8s_api_url: str = ""
+    k8s_token: str = ""
+    k8s_ca_path: str = ""
+
     loki_label_keys: list[str] = []
 
     @field_validator("loki_label_keys")
