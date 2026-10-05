@@ -82,3 +82,22 @@ class DecisionResult:
     policy_decision: PolicyDecision | None = None
     proposal_fingerprint: str | None = None
     snapshot: DecisionSnapshot | None = None   # REJECT 时为 None
+
+
+class ExecutionOutcome(str, Enum):
+    EXECUTED = "EXECUTED"
+    FAILED = "FAILED"
+    TIMEOUT = "TIMEOUT"
+    NOOP = "NOOP"
+
+
+class AdmissionOutcome(str, Enum):
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"      # 未进入执行（与 ExecutionOutcome 分模）
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    admission: AdmissionOutcome
+    reason: str = ""
+    outcome: ExecutionOutcome | None = None   # REJECTED 时为 None

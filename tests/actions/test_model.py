@@ -28,3 +28,9 @@ def test_proposal_and_target_descriptor_are_frozen():
     td = model.TargetDescriptor(kind="pod", environment="prod")
     with pytest.raises(dataclasses.FrozenInstanceError):
         td.kind = "y"
+
+
+def test_p3_execution_types():
+    assert {o.value for o in model.ExecutionOutcome} == {"EXECUTED", "FAILED", "TIMEOUT", "NOOP"}
+    assert {a.value for a in model.AdmissionOutcome} == {"ACCEPTED", "REJECTED"}
+
