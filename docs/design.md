@@ -2821,6 +2821,39 @@ C 的 final fallback 路径（baseline 仅作 observation）；A 的 `verdict` /
 
 **不得读作**：F3 / Loki / F4 的真实运行已被复现验证；也不得读作 Evaluation / Regression 已整体完成。
 
+### 48.5.1 V1 Runtime Closeout —— 第一次真实 L3 取证（2026-10-05）
+
+**性质**：这是 V1 收口用的**第一次真实 runtime evidence 取证尝试**（**非实现失败**）。真实 DeepSeek（`deepseek-v4-flash`）+ 真实 Prometheus/Loki/Mock CMDB；A/B/C 一轮、L 一轮（L 以**环境变量** `LOKI_LABEL_KEYS='["app"]'` 暴露契约，`.env` 未改、跑后确认仍只含 `LLM_*`）。`--compare` 对 committed declarative baseline 做三态对照，退出码 **1**（有 FAIL）；`baseline_validation: PASS`。
+
+**运行时结果**：
+
+| 项目 | 状态 |
+|---|---|
+| A `no-fabricated-cpu` | **FAIL — triage required** |
+| B `terminal-status` | **FAIL — label-contract prerequisite exposed** |
+| C `rca-valid` | **PASS** |
+| C `terminal-status` | **PASS** |
+| L Loki contract（L3-1..L3-4） | **PASS** |
+| F4 EC③（A/C 预算内收敛、到终态、无 MAX_STEPS） | **PASS / runtime evidence obtained** |
+| Evaluation EC①（改前/改后结构化差异） | **PARTIAL / single run only** |
+| Evaluation EC②（基线脱敏） | **PASS** |
+| Evaluation EC③（F3/Loki/F4 经基线复现） | **PARTIAL / runtime evidence incomplete** |
+| **V1 Closeout** | **NOT CLOSED** |
+
+**A（FAIL，原因已定位、修复 UNDECIDED）**：被标记证据句为 `…无对应已知故障模式或处置剧本支持该 CPU 高告警`——marker `cpu 高` 命中「CPU 高告警」，否定词「无」距其 **17 字符**，超出 `CPU_NEGATION_WINDOW=12`；同轮 `未复现 CPU 高负载`（「未」在窗口内）**未被误报**，说明校验器本身工作正常。**最准确定性：A FAIL 是 A 判据的否定窗口对自然语言句法覆盖不足所致；当前样本不足以证明应修改校验器。禁止仅为让 A PASS 而扩窗（12→20/24）**——那会移动既有判定边界、可能引入 false negative。**A = FAIL(runtime observation)，修复方案 UNDECIDED，暂不改代码、不重跑。**
+
+**B（FAIL，暴露已声明的运行前提）**：B 本轮以 `loki_label_keys=[]`（未暴露 label 契约）运行 → 模型猜测 `{service="order-service"}` → Loki 返回 **0 条** → 无真实日志证据 → multisource cross-check 不成立 → 收敛 `INCONCLUSIVE`。对照 **L**：暴露契约后模型一次即用对 `{app=...}`、取回真实日志、L3 全 PASS。**结论：B 的 baseline 不改、不降级**（维持 `status==ROOT_CAUSE_FOUND` 与 `evidence_sources ⊇ {prometheus,loki}`）；待决策项 = 是否让 L3 的 A/B/C/L 运行**统一暴露真实 Loki label contract**（属 **L3 harness 场景配置**，**不扩大生产工具契约**——#11 已将 `loki_label_keys` 做成配置能力）。
+
+**C（两个观察面，不得混同）**：baseline `verdict/status` = **PASS**；`scene_success` = **FAIL**，cause = 模型本轮选择 `submit_rca_result`（tool 路径）而非 `final_answer` 兜底，而 C 的 `scene_success` 语义要求兜底路径。**这不是 V1 failure**——`scene_success` 与 declarative baseline 是**并列的两个观察面**。
+
+**未取证项保持 `UNOBSERVED`**：Evaluation EC① 的真实「改前/改后」**跨运行**差异未做（需两次授权真实运行）；如实测未得的项不以 L0/L1/L2 推导为"已验证"。
+
+**待决策项（冻结，不擅自修改）**：
+1. **A validator triage** —— `CPU_NEGATION_WINDOW=12` 是否为设计缺陷；若判定需要修则**另立小项**。
+2. **B label-contract 前置** —— 是否让 L3 的 A/B/C/L 统一暴露 Loki label contract（见上）。
+
+**产物**（untracked `docs/l3-observations/`）：`v1-closeout-abc-2026-10-05-{console.txt,trace.json,snapshot.json}`、`v1-closeout-l-2026-10-05-{console.txt,trace.json}`。
+
 ## 48.6 V2 K8s / Approval / Audit（能力扩展）
 
 按 §34 推进，形成执行闭环：
@@ -2831,7 +2864,7 @@ Detect → Diagnose → Recommend → Approve → Execute → Verify → Audit
 
 **边界与前置**：
 
-- **V1 收口四项完成前不开工 V2**（避免在未稳定的工具契约上叠加执行链）。
+- **V1 收口四项完成前不开工 V2**（避免在未稳定的工具契约上叠加执行链）。**截至 2026-10-05，V1 Closeout = NOT CLOSED**（第一次真实 L3 取证中 A/B 判据 FAIL，含两个待决策项，见 §48.5.1）——故 V2 仍处阻塞。
 - `§47.3` 已定：**remediation eligibility 必须以 `verdict == ROOT_CAUSE_FOUND` 为资格条件**，不得只看 `status`——`NO_ANOMALY → RESOLVED` 与 `ROOT_CAUSE_FOUND → ROOT_CAUSE_FOUND` 都属"调查完成"，但只有后者有可修复对象。
 - 保持只读/写操作分离（§3.3）与审批前置（§14 C 类）；写操作一律经 Action Gateway + Approval，不直连工具。
 
@@ -2851,6 +2884,6 @@ Loki Contract ─┘
 | Evaluation | 改前后结构化差异可产出、基线可提交 | L3 harness |
 | V2 | 执行闭环打通、eligibility 以 verdict 为准 | L1/L2 + 新增层 |
 
-**V1 / V2 分界**：V1 = **只读诊断闭环 + 契约稳定**（当前至 §48.5）；V2 = **写操作执行闭环 + 审批审计**（§48.6 起）。V1 收口完成的标志是 48.5 的 Exit Criteria 全部达成。
+**V1 / V2 分界**：V1 = **只读诊断闭环 + 契约稳定**（当前至 §48.5）；V2 = **写操作执行闭环 + 审批审计**（§48.6 起）。V1 收口完成的标志是 48.5 的 Exit Criteria 全部达成。**截至 2026-10-05：V1 Closeout = NOT CLOSED**（第一次真实 L3 取证见 §48.5.1：A `no-fabricated-cpu` FAIL(triage)、B `terminal-status` FAIL(label-contract 前置)、C/L/F4 EC③ PASS；Evaluation EC①/③ 真实运行仍 PARTIAL/UNOBSERVED）。
 
 **保留红线**：真实 LLM 调用（消耗 token / 不可复现）执行前须用户确认；`.env` 与真实 Key 严禁入仓；keep 复用仅限 §48.3 的 A 级局部参考；`app/` 改动须有对应 L0 覆盖。
