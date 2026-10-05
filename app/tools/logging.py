@@ -70,4 +70,14 @@ class LoggingTool:
         except Exception as e:
             return ToolResult(success=False, tool="search_logs",
                               error=f"Loki 查询失败: {type(e).__name__}: {e}")
-        return ToolResult(success=True, tool="search_logs", data=resp.json())
+        try:
+            data = resp.json()
+        except ValueError:
+            # F6：200 但 body 非 JSON（如前置反代返回 HTML）——不把 JSONDecodeError 逸出工具，
+            # 返回可读的结构化失败（附状态码与截断原文），与 400 透传路径同口径。
+            body = (resp.text or "").strip()
+            if len(body) > 500:
+                body = body[:500] + "..."
+            return ToolResult(success=False, tool="search_logs",
+                              error=f"Loki 返回了非 JSON 响应（HTTP {resp.status_code}）：{body}")
+        return ToolResult(success=True, tool="search_logs", data=data)

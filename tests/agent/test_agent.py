@@ -626,3 +626,13 @@ def test_prompt_surfaces_state_the_hard_budget_clause(clause):
 
     assert clause in _DEFAULT_PROMPT
     assert clause in _load_prompt_template()
+
+
+# Prompt Surface Consistency：两个表面不得是两份独立维护的文本。
+# canonical = prompts/diagnose.txt；_DEFAULT_PROMPT 由它派生，二者恒逐字节相等。
+# 若日后有人把 _DEFAULT_PROMPT 改回独立字面量，本护栏即失败。
+def test_default_prompt_is_derived_from_production_template():
+    from app.agent.agent import _DEFAULT_PROMPT, PROMPT_FILE
+
+    canonical = PROMPT_FILE.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert _DEFAULT_PROMPT.replace("\r\n", "\n") == canonical

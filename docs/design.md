@@ -2687,7 +2687,7 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 2. 至少一次**真实日志证据**进入 RCA 的 evidence 集合；
 3. L1 日志用例不回归。
 
-**实现结论**：`Settings.loki_label_keys` 是 label schema 的唯一事实源；`LoggingTool` 由它合成自身契约文案（恒定段恒呈现 + 配置段仅在有声明时附加），经 `_ToolAdapter` 恒定附加进 tool description；`prompt` 不承载该契约。Loki **返回错误时**（HTTP 4xx/5xx）透传状态码与原始响应体，截断 500 字符；网络错误 / 超时仍走原有通用消息。**200 + 非 JSON body 不在此列**：`resp.json()` 位于 `app/tools/logging.py` 的 `try` 之外，会抛 `JSONDecodeError` 逸出工具（不返回 `ToolResult`），系 #11 之前的既存缺陷，已记入本阶段 spec §13 开放项（F6，非 #11 范围）。工具不做解析、分类、改写或重试。
+**实现结论**：`Settings.loki_label_keys` 是 label schema 的唯一事实源；`LoggingTool` 由它合成自身契约文案（恒定段恒呈现 + 配置段仅在有声明时附加），经 `_ToolAdapter` 恒定附加进 tool description；`prompt` 不承载该契约。Loki **返回错误时**（HTTP 4xx/5xx）透传状态码与原始响应体，截断 500 字符；网络错误 / 超时仍走原有通用消息。**200 + 非 JSON body 不在此列**：`resp.json()` 位于 `app/tools/logging.py` 的 `try` 之外，会抛 `JSONDecodeError` 逸出工具（不返回 `ToolResult`），系 #11 之前的既存缺陷，已记入本阶段 spec §13 开放项（F6，非 #11 范围）。**F6 已修复（2026-10-05）**：`resp.json()` 单独加 `ValueError` 守卫，200 + 非 JSON body 时返回结构化 `ToolResult(success=False)`（附状态码与截断 500 字符原文），不再逸出 `JSONDecodeError`；400/5xx 与传输错误路径零改动。工具仍不做解析、分类、改写或重试。
 
 **关键边界（不得含糊）**：
 - **契约只由 tool description 承载**（`Tool owns semantics；Adapter owns exposure`）；空配置时描述中**不得出现任何 deployment label 假设**（尤其不得内置 `app`）。
@@ -2748,7 +2748,7 @@ source 校验是**字段级** validator，source 非法时 pydantic 会抑制 `m
 
 **已知观察缺口（记录，不在 F4 修）**：拒绝发生在 adapter 层，**被拒调用不出现在 `tool_order` / `read_tool_calls` 中**，故「模型被拒了几次、是否屡拒不改、是否因此转向收尾」**不可观测**。若 Evaluation 阶段确需，再单独评估引入观察点的代价。
 
-**prompt 两表面分叉（记录，不在 F4 修）**：`PROMPT_FILE` 与 `_DEFAULT_PROMPT` 在预算条款之外存在 pre-existing 内容分叉，主要位于收尾/VERDICT/JSON 说明段；当前不影响正常文件加载路径，fallback 路径存在语义漂移风险。后续应单独统一两个 prompt surface，并增加整体一致性回归断言。
+**prompt 两表面分叉（已关闭，2026-10-05）**：原记录的 `PROMPT_FILE` 与 `_DEFAULT_PROMPT` 内容分叉已消除 —— 以 `prompts/diagnose.txt` 为**唯一 canonical**，`_DEFAULT_PROMPT` 改为**导入期从该文件读取的同源快照**（导入期读取失败即 fail-fast，不再存在第二份内联文本）；`_load_prompt_template()` 行为不变（运行时文件缺失仍回退到该快照）。护栏：`tests/agent/test_agent.py::test_default_prompt_is_derived_from_production_template` 断言 `_DEFAULT_PROMPT == PROMPT_FILE.read_text()`（换行归一），若日后改回独立字面量即失败；既有 `REQUIRED_BUDGET_CLAUSES` / `REQUIRED_NEGATIVE_CLAUSES` 语义钉子保留。prompt 文案本身零改动。
 
 **收口备注**：两个 prompt 表面的**预算条款本身已同步** —— 逐字一致（仅折行不同，语义子串整体相同），由 `tests/agent/test_agent.py::REQUIRED_BUDGET_CLAUSES`（`会被拒绝` / `不会执行底层查询`）钉住；上述分叉仅限其余段落，不涉及预算条款。
 
@@ -2806,7 +2806,7 @@ C 的 final fallback 路径（baseline 仅作 observation）；A 的 `verdict` /
 **脱敏**：`--baseline-out` 只写白名单标量/结构字段；**丢弃**模型原文（`root_cause`）、
 `evidence[].fact`、Loki `logs` 正文、`query` 字符串。
 
-**验证状态（2026-10-02）**：L0 **PASS**（442 passed）。
+**验证状态（2026-10-02）**：L0 **PASS**（442 passed；此后 F6 / Prompt-Surface 两项清理使全量增至 **445**，二者与本节的基线/比较机制互相独立）。
 改动面 = `scripts/l3_real_backend.py` + `tests/baselines/l3_declarative_baseline.json` +
 `tests/scripts/test_l3_baseline.py`；**`app/` 零改动**、`scene_success()` 零改动、
 `tests/scripts/test_l3_gate.py` 零改动。

@@ -33,32 +33,10 @@ from app.tools.base import ToolResult
 # prompts/ 位于项目根目录（本文件在 app/agent/ 下，向上三级）。
 PROMPT_FILE = Path(__file__).resolve().parent.parent.parent / "prompts" / "diagnose.txt"
 
-_DEFAULT_PROMPT = (
-    "你是 AIOps 诊断 Agent。请调查以下故障并给出带证据的根因结论。\n"
-    "故障: {title}，服务: {service}，级别: {severity}。\n"
-    "告警上下文: {context}\n"
-    "可用工具: {tool_names}\n"
-    "调查预算: 你最多只能调用 {max_read_tools} 次只读工具（query_metric/query_metric_range/"
-    "search_runbook 等，不含 submit_rca_result 与 final_answer）。"
-    "超过该预算的只读调用会被拒绝，不会执行底层查询，并返回预算耗尽提示。"
-    "因此应在预算内完成调查并及时收尾提交 RCA。\n"
-    "收敛判据: 先用只读工具收集证据，一旦已有至少 2 条独立证据、且来自至少 2 个不同来源，"
-    "就必须停止继续调查并立即收尾提交 RCA；不要为了找更多证据而查满预算。\n"
-    "收尾二选一：①首选调用 submit_rca_result 提交结构化 RCA；"
-    "②兜底调用 final_answer 时把严格 JSON 放进 <rca_result>...</rca_result> 标签。"
-    "结论三选一（verdict）：ROOT_CAUSE_FOUND 确定根因且 root_cause 必填非空；"
-    "NO_ANOMALY 表示告警被证伪/未发现对应异常，此时 root_cause 必须省略且禁止填入伪根因，"
-    "用 evidence 说明为何无异常；INCONCLUSIVE 表示已调查但证据不足以定论，root_cause 省略并至少留 1 条 evidence，"
-    "这是合法结论而非失败。"
-    "JSON 字段：verdict 为上述三值之一；root_cause 为字符串（NO_ANOMALY/INCONCLUSIVE 时省略）；"
-    "confidence 为 0 到 1 之间的数字（ROOT_CAUSE_FOUND/NO_ANOMALY 必填，INCONCLUSIVE 可省略）；"
-    "evidence 为数组且至少 1 条，每条必须是含 source 与 fact 两个字段的对象，且两者不能为空；"
-    "source 表示「这条证据由哪个数据源提供」——是数据源名，不是哪次查询、不是工具名、"
-    "不是查询方法名、不是 Python 类名，也不是 query_metric(...) 这类调用表达式；"
-    "只能是下列值之一：{sources}；fact 为该来源实际观察到的事实。"
-    "hypotheses 与 recommendations 为字符串数组；summary 可选。"
-    "注意：evidence 不要用纯字符串数组；hypotheses 不要用对象数组。"
-)
+# 唯一 canonical prompt = prompts/diagnose.txt；_DEFAULT_PROMPT 与之同源（导入期读取快照），
+# 二者不可能成为两份独立维护的文本。运行时模板缺失时用该快照兜底（既有行为不变）。
+# 导入期读取失败即 fail-fast：不存在第二份内联 prompt，prompts/ 是唯一来源。
+_DEFAULT_PROMPT = PROMPT_FILE.read_text(encoding="utf-8")
 
 
 def _build_context(inc) -> str:

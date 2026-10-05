@@ -270,3 +270,26 @@ def test_search_logs_empty_result_is_still_success(monkeypatch):
     r = tool.search_logs('{service="order-service"}')
     assert r.success is True
     assert r.data["data"]["result"] == []
+
+
+def test_search_logs_200_non_json_body_is_structured_failure(monkeypatch):
+    # F6：200 但 body 非 JSON（如前置反代返回 HTML）不得让 JSONDecodeError 逸出工具；
+    # 应返回结构化失败并附状态码与原文，供模型判断（回归钉子）。
+    _loki_stub(monkeypatch, 200, "<html>bad gateway</html>")
+    tool = LoggingTool(Settings(loki_url="http://loki:3100"))
+    r = tool.search_logs('{app="order-service"}')   # 不得 raise
+    assert r.success is False
+    assert "非 JSON" in r.error
+    assert "HTTP 200" in r.error
+    assert "bad gateway" in r.error
+
+
+def test_search_logs_200_non_json_body_truncates_long_body_to_500(monkeypatch):
+    # F6：非 JSON 响应体同样按 500 字符截断（与 400 透传路径口径一致）。
+    _loki_stub(monkeypatch, 200, "y" * 1200)
+    tool = LoggingTool(Settings(loki_url="http://loki:3100"))
+    r = tool.search_logs('{app="order-service"}')
+    assert r.success is False
+    assert "y" * 500 in r.error
+    assert "y" * 501 not in r.error
+    assert r.error.endswith("...")
