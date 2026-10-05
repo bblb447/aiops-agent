@@ -77,3 +77,21 @@ def test_list_pods_200_non_json_is_structured_failure(monkeypatch):
 
 def test_kubernetes_tool_declares_source_type():
     assert KubernetesTool(Settings()).source_type is EvidenceSource.KUBERNETES
+
+
+def test_list_events_success_sets_field_selector(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None, verify=None):
+        captured["url"] = str(url); captured["params"] = params
+        return httpx.Response(200, request=httpx.Request("GET", str(url)),
+                              json={"items": [{"reason": "BackOff"}]})
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    r = _tool().list_events("prod", field_selector="involvedObject.name=pod-1")
+    assert r.success is True
+    assert r.tool == "list_events"
+    assert r.data["items"][0]["reason"] == "BackOff"
+    assert captured["url"] == "https://k8s.test:6443/api/v1/namespaces/prod/events"
+    assert captured["params"] == {"fieldSelector": "involvedObject.name=pod-1"}
+

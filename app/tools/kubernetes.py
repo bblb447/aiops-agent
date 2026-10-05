@@ -9,7 +9,7 @@ from app.tools.base import ToolResult
 class KubernetesTool:
     # F3：本工具的证据归属数据源（spec §2.6）。
     source_type = EvidenceSource.KUBERNETES
-    exposed_methods = ["list_pods"]
+    exposed_methods = ["list_pods", "list_events"]
 
     def __init__(self, settings: Settings) -> None:
         self._api = settings.k8s_api_url
@@ -49,3 +49,8 @@ class KubernetesTool:
         params = {"labelSelector": label_selector} if label_selector else {}
         path = f"/api/v1/namespaces/{quote(namespace, safe='')}/pods"
         return self._get(path, params, "list_pods")
+
+    def list_events(self, namespace: str, field_selector: str | None = None) -> ToolResult:
+        params = {"fieldSelector": field_selector} if field_selector else {}
+        path = f"/api/v1/namespaces/{quote(namespace, safe='')}/events"
+        return self._get(path, params, "list_events")
