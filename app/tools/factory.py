@@ -1,6 +1,7 @@
 from app.config import Settings
 from app.tools.cmdb import CMDBTool
 from app.tools.knowledge import KnowledgeTool
+from app.tools.kubernetes import KubernetesTool
 from app.tools.logging import LoggingTool
 from app.tools.monitoring import MonitoringTool
 
@@ -12,4 +13,5 @@ def build_tools(settings: Settings) -> list:
         LoggingTool(settings),
         CMDBTool(settings),
         KnowledgeTool(settings),
+        KubernetesTool(settings),
     ]

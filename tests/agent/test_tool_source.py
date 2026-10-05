@@ -12,6 +12,7 @@ EXPECTED = {
     "LoggingTool": EvidenceSource.LOKI,
     "CMDBTool": EvidenceSource.CMDB,
     "KnowledgeTool": EvidenceSource.RUNBOOK,
+    "KubernetesTool": EvidenceSource.KUBERNETES,
 }
 
 PYTHON_CLASS_NAMES = ["MonitoringTool", "LoggingTool", "CMDBTool", "KnowledgeTool",
@@ -42,6 +43,7 @@ def test_adapter_description_carries_source_guidance():
     assert "loki" in adapters["search_logs"].description
     assert "cmdb" in adapters["get_service"].description
     assert "runbook" in adapters["search_runbook"].description
+    assert "kubernetes" in adapters["list_pods"].description
 
 
 def test_submit_tool_has_no_source_type_and_adapts_without_error():

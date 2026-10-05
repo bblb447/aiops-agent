@@ -111,8 +111,8 @@ def test_investigate_returns_structured_error_on_failure():
 
 
 def test_investigate_passes_tools_to_investigator():
-    # 闭环注入：端点必须把 build_tools(settings) 的 4 个只读工具传给 investigator，
-    # 而不是硬编码空列表，Agent 才能真正动态诊断。
+    # 闭环注入：端点必须把 build_tools(settings) 的全部只读工具（现 5 个，含 K8s read）
+    # 传给 investigator，而不是硬编码空列表，Agent 才能真正动态诊断。
     svc = IncidentService()
     seen = {}
 
@@ -130,8 +130,9 @@ def test_investigate_passes_tools_to_investigator():
     r2 = c.post(f"/api/v1/incidents/{iid}/investigate")
     assert r2.status_code == 200
     assert r2.json()["conclusion"] == "已注入工具"
-    assert len(seen["tools"]) == 4
-    assert seen["names"] == {"MonitoringTool", "LoggingTool", "CMDBTool", "KnowledgeTool"}
+    assert len(seen["tools"]) == 5
+    assert seen["names"] == {"MonitoringTool", "LoggingTool", "CMDBTool",
+                             "KnowledgeTool", "KubernetesTool"}
 
 
 def test_investigate_receives_real_settings():

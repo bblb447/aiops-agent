@@ -104,3 +104,16 @@ def test_submit_is_exposed_but_not_budgeted_and_survives_exhaustion():
     ))
     assert payload["success"] is True
     assert budget.executed == 1          # ← 经 adapter 调用，故这行有判别力
+
+
+def test_kubernetes_read_counts_toward_budget():
+    # F4：K8s 只读调用与其它只读工具同口径计入 ReadBudget（spec §10）。
+    from app.config import Settings
+    from app.tools.kubernetes import KubernetesTool
+
+    budget = ReadBudget(1)
+    by_name = {t.name: t for t in adapt_tools([KubernetesTool(Settings())], budget=budget)}
+    by_name["list_pods"].forward(namespace="prod")   # 放行即计数（未配置 → 底层 success=False 仍计数）
+    assert budget.executed == 1
+    by_name["list_pods"].forward(namespace="prod")   # 达限后拒绝，不执行、不计数
+    assert budget.executed == 1

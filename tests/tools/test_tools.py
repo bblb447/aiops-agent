@@ -198,10 +198,11 @@ def test_query_workload_exposed_via_adapter():
     assert "query_workload" in {a.name for a in adapters}
 
 
-def test_build_tools_returns_four_tools():
+def test_build_tools_returns_five_tools():
     tools = build_tools(Settings())
     names = {t.__class__.__name__ for t in tools}
-    assert names == {"MonitoringTool", "LoggingTool", "CMDBTool", "KnowledgeTool"}
+    assert names == {"MonitoringTool", "LoggingTool", "CMDBTool",
+                     "KnowledgeTool", "KubernetesTool"}
 
 
 # ===== #11 Loki 400 错误契约（spec §8）=====
