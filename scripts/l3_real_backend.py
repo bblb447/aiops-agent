@@ -355,6 +355,11 @@ PROM_URL = "http://127.0.0.1:9090"
 LOKI_URL = "http://127.0.0.1:3100"
 CMDB_URL = "http://127.0.0.1:8081"
 
+# L3 场景统一暴露的 Loki stream label key。取值来源：
+# tests/integration/fixtures/seed_loki.py 的 stream 标签 {"app": "order-service"}。
+# 仅 L3 harness 配置：不改生产 Settings 默认、不改 fixture。
+L3_LOKI_LABEL_KEYS = ["app"]
+
 SCENARIOS = [
     dict(
         name="cpu_alert_negative_control", kind="A",
@@ -763,10 +768,11 @@ def _run_scenario(scenario: dict) -> dict:
     _FULL_ORDER.clear()
     _LOKI_CALLS.clear()
 
-    settings = Settings()  # 读 .env；仅 URL/rag 覆写，llm_* 与 agent_* 保持 .env/env 值
+    settings = Settings()  # 读 .env；仅 URL/rag/label-keys 覆写，llm_* 与 agent_* 保持 .env/env 值
     settings.prometheus_url = PROM_URL
     settings.loki_url = LOKI_URL
     settings.cmdb_url = CMDB_URL
+    settings.loki_label_keys = L3_LOKI_LABEL_KEYS
     settings.rag_enabled = False
     settings.agent_max_steps = int(os.environ.get("L3_MAX_STEPS", "10"))
     budget = settings.agent_max_read_tools
@@ -971,6 +977,7 @@ def main(argv=None) -> int:
             return EXIT_BASELINE_CONFIG_ERROR
 
     settings = Settings()
+    settings.loki_label_keys = L3_LOKI_LABEL_KEYS  # 预检与场景一致：A/B/C/L 统一暴露契约
     if not settings.llm_api_key:
         print("缺少 LLM API Key：请先配置 .env 的 llm_api_key / llm_base_url / llm_model")
         return 2
