@@ -12,3 +12,4 @@ class EvidenceSource(str, Enum):
     LOKI = "loki"
     CMDB = "cmdb"
     RUNBOOK = "runbook"
+    KUBERNETES = "kubernetes"

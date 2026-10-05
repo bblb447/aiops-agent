@@ -99,3 +99,10 @@ def test_docstring_branch_keeps_docstring_and_still_carries_source_guidance():
     assert "查询 CMDB 中的服务信息。" in description
     assert "证据来源(source)：cmdb" in description
     assert "_DocStubTool" not in description
+
+
+def test_evidence_source_vocabulary_includes_kubernetes():
+    # spec §2.6：唯一受控 V1 additive 扩展——来源词表新增 kubernetes。
+    assert EvidenceSource.KUBERNETES.value == "kubernetes"
+    assert "kubernetes" in {s.value for s in EvidenceSource}
+
