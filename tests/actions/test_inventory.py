@@ -1,6 +1,7 @@
+import httpx
 import pytest
 
-from app.actions.inventory import parse_target_descriptor
+from app.actions.inventory import CMDBInventoryResolver, parse_target_descriptor
 from app.actions.model import TargetDescriptor
 
 
@@ -42,3 +43,55 @@ def test_unknown_fields_ignored():
     d = parse_target_descriptor(
         {"kind": "pod", "environment": "prod", "replicas": 2, "workload": "w", "extra": "x"})
     assert d == TargetDescriptor("pod", "prod", 2)
+
+
+def _resolver(handler, url="http://cmdb"):
+    return CMDBInventoryResolver(url, transport=httpx.MockTransport(handler))
+
+
+def test_resolve_returns_descriptor_on_200():
+    def h(req):
+        assert req.url.path == "/targets/dep-1"
+        return httpx.Response(200, json={"kind": "deployment", "environment": "staging", "replicas": 3})
+    assert _resolver(h).resolve("dep-1") == TargetDescriptor("deployment", "staging", 3)
+
+
+def test_unconfigured_url_returns_none():
+    assert CMDBInventoryResolver("").resolve("any") is None
+
+
+@pytest.mark.parametrize("status", [403, 404, 500])
+def test_non_200_returns_none(status):
+    assert _resolver(lambda req: httpx.Response(status)).resolve("x") is None
+
+
+def test_non_json_200_returns_none():
+    assert _resolver(lambda req: httpx.Response(200, text="<html>ok</html>")).resolve("x") is None
+
+
+def test_malformed_200_body_returns_none():
+    assert _resolver(lambda req: httpx.Response(200, json={"environment": "prod"})).resolve("x") is None
+
+
+def test_connection_error_returns_none():
+    def h(req):
+        raise httpx.ConnectError("down")
+    assert _resolver(h).resolve("x") is None
+
+
+def test_resolver_never_raises_on_unexpected_error():
+    def h(req):
+        raise RuntimeError("boom")
+    assert _resolver(h).resolve("x") is None
+
+
+@pytest.mark.parametrize("url", ["http://cmdb", "http://cmdb/"])
+def test_target_is_url_encoded_and_no_double_slash(url):
+    seen = {}
+
+    def h(req):
+        seen["raw"] = req.url.raw_path
+        return httpx.Response(200, json={"kind": "pod", "environment": "prod", "replicas": None})
+    _resolver(h, url=url).resolve("a/b c")
+    assert b"a%2Fb%20c" in seen["raw"]        # '/' 与空格被编码，不越出 /targets/
+    assert b"//targets/" not in seen["raw"]   # 尾斜杠 url 不产生 //targets/

@@ -1,4 +1,7 @@
 from typing import Any, Protocol
+from urllib.parse import quote
+
+import httpx
 
 from app.actions.model import TargetDescriptor
 
@@ -25,3 +28,29 @@ def parse_target_descriptor(data: Any) -> TargetDescriptor | None:
         if not isinstance(replicas, int) or replicas < 0:  # 非整数 / 负数 → malformed
             return None
     return TargetDescriptor(kind=kind, environment=env, replicas=replicas)
+
+
+class CMDBInventoryResolver:
+    """V1 concrete adapter：GET {cmdb_url}/targets/{name}。只读、无副作用、不抛异常。"""
+
+    def __init__(self, cmdb_url: str, *, transport=None, timeout: float = 10.0) -> None:
+        self._url = cmdb_url.rstrip("/")        # 去尾斜杠，避免 ``…//targets``
+        self._transport = transport
+        self._timeout = timeout
+
+    def resolve(self, target: str) -> TargetDescriptor | None:
+        if not self._url:
+            return None
+        try:
+            with httpx.Client(transport=self._transport) as client:
+                resp = client.get(f"{self._url}/targets/{quote(target, safe='')}",
+                                  timeout=self._timeout)
+        except Exception:                       # 连接 / 超时 / 其它网络错误 → fail-closed
+            return None
+        if resp.status_code != 200:
+            return None
+        try:
+            data = resp.json()
+        except Exception:                       # 非 JSON body → fail-closed
+            return None
+        return parse_target_descriptor(data)
