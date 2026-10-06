@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     agent_max_steps: int = 10
     agent_max_read_tools: int = 4
 
-    app_env: str = "development"                 # "development" | "production"
+    app_env: str = ""                            # ""(未设) | "development" | "production"；未设 → fail-closed
     authenticator: str = ""                      # "" | "dev" | "oidc_jwt"
     executor_principal_id: str = ""              # 空 = 未配置；装配处强制非空
 

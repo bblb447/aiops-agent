@@ -101,6 +101,8 @@ class AuditLog:
                principal_id=None, auth_method=None) -> AuditEvent:
         if event_type not in EVENT_TYPES:
             raise ValueError(f"未知 audit event_type: {event_type!r}")
+        if auth_method is not None and not isinstance(auth_method, AuthMethod):
+            auth_method = AuthMethod(auth_method)   # 规范化：raw str → AuthMethod（非法值 → ValueError）
         seq = len(self._events)
         prev = self._events[-1].integrity if self._events else GENESIS
         det = _sanitize_strict(dict(detail or {}))

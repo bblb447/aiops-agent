@@ -15,12 +15,14 @@ def build_authenticator(settings: Settings) -> Authenticator:
         if mode in ("", "none"):
             return DenyAllAuthenticator()          # fail-closed
         raise ValueError(f"未知 authenticator: {mode!r}")
-    # 非 production
-    if mode in ("", "dev"):
-        return DevAuthenticator()
-    if mode == "none":
-        return DenyAllAuthenticator()
-    raise ValueError(f"未知 authenticator: {mode!r}")
+    if env == "development":                        # 显式开发环境才允许宽松
+        if mode in ("", "dev"):
+            return DevAuthenticator()
+        if mode == "none":
+            return DenyAllAuthenticator()
+        raise ValueError(f"未知 authenticator: {mode!r}")
+    # 未设 / 未知 / 拼错 → fail-closed（不得退化到 dev；2026-10-06 安全增强）
+    return DenyAllAuthenticator()
 
 
 _DEV_EXECUTOR_PRINCIPAL = "executor-service"   # 仅非 production 的 provenance 标签（非凭据）

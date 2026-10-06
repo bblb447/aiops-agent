@@ -100,3 +100,14 @@ def test_principal_id_is_integrity_covered():
 def test_identity_defaults_none():
     e = AuditLog().append("PROPOSED")
     assert e.principal_id is None and e.auth_method is None
+
+
+def test_auth_method_normalized_to_enum():
+    # auth_method 运行时保持 AuthMethod 类型（稳定契约），_canonical 的 .value 不靠错误暴露
+    e = AuditLog().append("APPROVED", auth_method="dev")
+    assert e.auth_method is AuthMethod.DEV
+
+
+def test_invalid_auth_method_rejected():
+    with pytest.raises(ValueError):
+        AuditLog().append("APPROVED", auth_method="bogus")

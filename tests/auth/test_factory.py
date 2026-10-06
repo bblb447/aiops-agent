@@ -9,8 +9,14 @@ def _s(**kw):
     return Settings(**kw)
 
 
-def test_dev_env_default_is_dev_authenticator():
+def test_explicit_development_env_is_dev_authenticator():
     assert isinstance(build_authenticator(_s(app_env="development")), DevAuthenticator)
+
+
+@pytest.mark.parametrize("env", ["", "   ", "prod", "prd", "staging", "unknown"])
+def test_unset_or_unknown_env_is_fail_closed(env):
+    # 2026-10-06 安全增强：未设/未知/拼错 app_env → DenyAll，不得退化到 DevAuthenticator
+    assert isinstance(build_authenticator(_s(app_env=env)), DenyAllAuthenticator)
 
 
 def test_production_with_dev_is_configuration_error():
