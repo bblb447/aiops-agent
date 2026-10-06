@@ -95,3 +95,15 @@ def test_target_is_url_encoded_and_no_double_slash(url):
     _resolver(h, url=url).resolve("a/b c")
     assert b"a%2Fb%20c" in seen["raw"]        # '/' 与空格被编码，不越出 /targets/
     assert b"//targets/" not in seen["raw"]   # 尾斜杠 url 不产生 //targets/
+
+
+@pytest.mark.parametrize("target", [".", "..", "a/../..", "../x"])
+def test_dot_segments_do_not_escape_targets(target):
+    # httpx 会做 RFC-3986 dot-segment 归一化：'.'/'..' 若未编码会逃出 /targets/。
+    seen = {}
+
+    def h(req):
+        seen["raw"] = req.url.raw_path
+        return httpx.Response(404)
+    _resolver(h).resolve(target)
+    assert seen["raw"].startswith(b"/targets/")   # 始终留在 /targets/ 下

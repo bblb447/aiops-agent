@@ -11,6 +11,12 @@ class TargetResolver(Protocol):
     def resolve(self, target: str) -> TargetDescriptor | None: ...
 
 
+def _encode_target(target: str) -> str:
+    """quote 后把 '.' 也编码为 %2E —— 否则 httpx 的 RFC-3986 dot-segment 归一化
+    会把 '.'/'..' 消掉，令请求逃出 /targets/。"""
+    return quote(target, safe="").replace(".", "%2E")
+
+
 def parse_target_descriptor(data: Any) -> TargetDescriptor | None:
     """严格解析 inventory 响应；任何不合法 → None（fail-closed）。"""
     if not isinstance(data, dict):
@@ -43,7 +49,7 @@ class CMDBInventoryResolver:
             return None
         try:
             with httpx.Client(transport=self._transport) as client:
-                resp = client.get(f"{self._url}/targets/{quote(target, safe='')}",
+                resp = client.get(f"{self._url}/targets/{_encode_target(target)}",
                                   timeout=self._timeout)
         except Exception:                       # 连接 / 超时 / 其它网络错误 → fail-closed
             return None
