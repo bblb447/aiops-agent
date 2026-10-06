@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     agent_max_steps: int = 10
     agent_max_read_tools: int = 4
 
+    app_env: str = "development"                 # "development" | "production"
+    authenticator: str = ""                      # "" | "dev" | "oidc_jwt"
+    executor_principal_id: str = ""              # 空 = 未配置；装配处强制非空
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
