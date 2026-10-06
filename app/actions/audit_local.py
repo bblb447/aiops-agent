@@ -1,8 +1,10 @@
 import json
 import os
+import tempfile
 from dataclasses import asdict
 
 from app.actions.audit import AuditEvent
+from app.actions.audit_ports import AnchorHead
 from app.auth.model import AuthMethod
 
 
@@ -64,3 +66,49 @@ class LocalFileAuditStore:
     def last_seq(self) -> int:
         ev = self.read_all()
         return ev[-1].seq if ev else -1
+
+
+class LocalAnchor:
+    """head 提交：pending marker 保证「不确定提交 → 恢复 fail-closed」。
+
+    顺序：写 pending（durable）→ replace head（durable）→ 删 pending（durable）→ success。
+    `read()` 若见 pending → fail-closed（上一轮 commit 处于不确定态：可能 replace 前/后崩溃）。
+    """
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._pending = path + ".pending"
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+
+    @staticmethod
+    def _durable_write(path: str, obj: dict) -> None:
+        d = os.path.dirname(os.path.abspath(path))
+        fd, tmp = tempfile.mkstemp(dir=d)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(obj, f, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)                     # 原子
+            _fsync_dir(d)
+        finally:
+            if os.path.exists(tmp):                   # 异常路径不留 *.tmp
+                os.remove(tmp)
+
+    def read(self) -> AnchorHead | None:
+        if os.path.exists(self._pending):             # 不确定提交 → fail-closed
+            raise ValueError("fail-closed：存在未完成的 anchor 提交（pending marker）")
+        if not os.path.exists(self._path):
+            return None
+        with open(self._path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return AnchorHead(d["seq"], d["integrity"], d["key_version"])
+
+    def commit(self, head: AnchorHead) -> None:
+        cur = self.read()                             # pending 存在 → 抛（fail-closed）
+        if cur is not None and head.seq < cur.seq:
+            raise ValueError("anchor head 回退被拒")
+        d = {"seq": head.seq, "integrity": head.integrity, "key_version": head.key_version}
+        self._durable_write(self._pending, d)         # 1) pending 先 durable
+        self._durable_write(self._path, d)            # 2) head replace durable
+        os.remove(self._pending)                      # 3) 撤 pending
+        _fsync_dir(os.path.dirname(os.path.abspath(self._path)))

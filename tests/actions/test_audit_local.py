@@ -3,7 +3,8 @@ import json
 import pytest
 
 from app.actions.audit import AuditEvent
-from app.actions.audit_local import LocalFileAuditStore
+from app.actions.audit_local import LocalAnchor, LocalFileAuditStore
+from app.actions.audit_ports import AnchorHead
 
 
 def _ev(seq, integ, prev="GENESIS", version=1):
@@ -48,3 +49,46 @@ def test_first_create_fsyncs_parent_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "fsync", lambda fd: (calls.append(fd), real(fd))[1])
     LocalFileAuditStore(str(tmp_path / "r.jsonl")).append(_ev(0, "a"))
     assert len(calls) >= 2                            # 文件 fsync + 首建父目录 fsync
+
+
+# ---------- Task 5：LocalAnchor（原子 + pending marker） ----------
+
+def test_normal_commit_roundtrip(tmp_path):
+    p = tmp_path / "head.json"
+    a = LocalAnchor(str(p))
+    assert a.read() is None
+    a.commit(AnchorHead(0, "x", 1))
+    a.commit(AnchorHead(1, "y", 2))
+    assert LocalAnchor(str(p)).read() == AnchorHead(1, "y", 2)
+    assert not (tmp_path / "head.json.pending").exists()        # pending 已撤
+
+
+def test_commit_rejects_rollback(tmp_path):
+    a = LocalAnchor(str(tmp_path / "head.json"))
+    a.commit(AnchorHead(2, "z", 1))
+    with pytest.raises(ValueError):
+        a.commit(AnchorHead(1, "y", 1))
+
+
+def test_commit_writes_exact_json(tmp_path):
+    p = tmp_path / "head.json"
+    LocalAnchor(str(p)).commit(AnchorHead(5, "abc", 3))
+    assert json.loads(p.read_text(encoding="utf-8")) == {
+        "seq": 5, "integrity": "abc", "key_version": 3}
+
+
+def test_crash_before_replace_fails_closed(tmp_path):
+    a = LocalAnchor(str(tmp_path / "head.json"))
+    (tmp_path / "head.json.pending").write_text(
+        json.dumps({"seq": 1, "integrity": "x", "key_version": 1}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        a.read()
+
+
+def test_crash_after_replace_before_finalize_fails_closed(tmp_path):
+    a = LocalAnchor(str(tmp_path / "head.json"))
+    a.commit(AnchorHead(1, "x", 1))
+    (tmp_path / "head.json.pending").write_text(             # head 已新 + pending 残留
+        json.dumps({"seq": 2, "integrity": "y", "key_version": 1}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        a.read()
