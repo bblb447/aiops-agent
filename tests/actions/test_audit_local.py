@@ -70,6 +70,20 @@ def test_commit_rejects_rollback(tmp_path):
         a.commit(AnchorHead(1, "y", 1))
 
 
+def test_commit_rejects_equal_seq_conflicting_head(tmp_path):
+    a = LocalAnchor(str(tmp_path / "head.json"))
+    a.commit(AnchorHead(1, "aaa", 1))
+    with pytest.raises(ValueError):
+        a.commit(AnchorHead(1, "bbb", 2))          # 相等 seq + 不同 head → 拒
+
+
+def test_construction_does_not_create_dirs(tmp_path):
+    LocalFileAuditStore(str(tmp_path / "records_dir" / "records.jsonl"))
+    LocalAnchor(str(tmp_path / "anchor_dir" / "head.json"))
+    assert not (tmp_path / "records_dir").exists()   # 构造不 mkdir（避免 import 副作用）
+    assert not (tmp_path / "anchor_dir").exists()
+
+
 def test_commit_writes_exact_json(tmp_path):
     p = tmp_path / "head.json"
     LocalAnchor(str(p)).commit(AnchorHead(5, "abc", 3))

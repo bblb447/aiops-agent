@@ -116,8 +116,13 @@ class AuditLog:
         self._anchor = anchor if anchor is not None else MemoryAnchor()
         self._kp = key_provider if key_provider is not None else EphemeralKeyProvider()
         self._lock = threading.Lock()
+        self._poisoned = False
         self._events: list[AuditEvent] = []
         self._recover()
+
+    def _check_live(self) -> None:
+        if self._poisoned:                          # store 已写、anchor 未提交 → 不一致，fail-closed
+            raise RuntimeError("fail-closed：audit 处于不一致状态（此前 anchor.commit 失败）")
 
     def _key_map(self, events) -> dict:
         out: dict[int, bytes] = {}
@@ -150,6 +155,7 @@ class AuditLog:
         if auth_method is not None and not isinstance(auth_method, AuthMethod):
             auth_method = AuthMethod(auth_method)   # 规范化：raw str → AuthMethod（非法值 → ValueError）
         with self._lock:                            # 单写者：seq/store/anchor 不可交错
+            self._check_live()
             version, key = self._kp.current()
             seq = len(self._events)
             prev = self._events[-1].integrity if self._events else GENESIS
@@ -159,7 +165,11 @@ class AuditLog:
             e = AuditEvent(seq, event_type, incident_id, action_id, proposal_fingerprint,
                            det, prev, version, principal_id, auth_method, integ)
             self._store.append(e)                   # durable（fsync）
-            self._anchor.commit(AnchorHead(seq, integ, version))   # durable + atomic
+            try:
+                self._anchor.commit(AnchorHead(seq, integ, version))   # durable + atomic
+            except Exception:
+                self._poisoned = True               # store 成功但 anchor 未提交 → 不一致
+                raise                               # 后续 append/verify fail-closed
             self._events.append(e)
             return e
 
@@ -174,4 +184,5 @@ class AuditLog:
         return tuple(self._events)          # 不暴露可变内部 list
 
     def verify(self) -> bool:
+        self._check_live()
         return verify_chain(self._events, self.head(), self._key_map(self._events))

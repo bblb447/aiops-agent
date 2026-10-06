@@ -17,3 +17,10 @@ def test_defaults_are_separate_dirs():
 def test_violations_rejected(rec, anc, key):
     with pytest.raises(ValueError):
         validate_audit_paths(rec, anc, key)
+
+
+def test_anchor_in_records_subdir_is_rejected(tmp_path):
+    rec = str(tmp_path / "audit" / "records.jsonl")
+    anc = str(tmp_path / "audit" / "sub" / "head.json")           # records 目录的子目录内
+    with pytest.raises(ValueError):
+        validate_audit_paths(rec, anc, str(tmp_path / "k" / "keys.json"))

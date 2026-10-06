@@ -193,3 +193,15 @@ def test_concurrent_appends_are_serialized():
     assert sorted(e.seq for e in log.events()) == list(range(80))   # 无重复/无空洞
     assert log.verify() is True                                     # 链 + anchor 自洽
     assert a.read() == log.head()                                   # anchor 与内存 head 一致
+
+
+def test_append_after_failed_anchor_commit_is_poisoned():
+    s = MemoryAuditStore(); kp = EphemeralKeyProvider()
+    log = AuditLog(s, _BoomAnchor(), kp)
+    with pytest.raises(RuntimeError):
+        log.append("PROPOSED")
+    with pytest.raises(Exception):
+        log.append("PROPOSED")                                      # poisoned：不再静默续写
+    with pytest.raises(Exception):
+        log.verify()                                                # 亦 fail-closed
+    assert len(s.read_all()) == 1                                   # store 无重复 seq

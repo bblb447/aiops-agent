@@ -35,18 +35,26 @@ def _fsync_dir(d: str) -> None:
 
 
 def validate_audit_paths(records: str, anchor: str, key: str) -> None:
-    """启动隔离校验（fail-closed）：anchor/key 不得落在 records 目录内，且 anchor ≠ key。
+    """启动隔离校验（fail-closed）：anchor/key 不得落在 records 目录**之内**（含子目录 / 软链解析后），
+    且 anchor ≠ key。
 
     注意：路径分离 ≠ 完整 OS trust-domain separation（同机同 account 仍可能同时改三者）；
     真正强锚定（external WORM/KMS/HSM）留 additive。此校验只防「明显误配」。
     """
-    rec_dir = os.path.dirname(os.path.abspath(records))
-    anc = os.path.abspath(anchor)
-    kp = os.path.abspath(key)
-    if os.path.dirname(anc) == rec_dir:
-        raise ValueError("audit anchor path 不得位于 records 目录内")
-    if os.path.dirname(kp) == rec_dir:
-        raise ValueError("audit key path 不得位于 records 目录内")
+    rec_dir = os.path.realpath(os.path.dirname(os.path.abspath(records)))
+    anc = os.path.realpath(os.path.abspath(anchor))
+    kp = os.path.realpath(os.path.abspath(key))
+
+    def _inside(p: str) -> bool:
+        try:
+            return os.path.commonpath([rec_dir, p]) == rec_dir
+        except ValueError:                          # 不同盘符（Windows）→ 不属于同一树
+            return False
+
+    if _inside(anc):
+        raise ValueError("audit anchor path 不得位于 records 目录内（含子目录/软链）")
+    if _inside(kp):
+        raise ValueError("audit key path 不得位于 records 目录内（含子目录/软链）")
     if anc == kp:
         raise ValueError("audit anchor 与 key 不得使用同一路径")
 
@@ -55,10 +63,10 @@ class LocalFileAuditStore:
     """append-only JSONL；append 后 fsync（首次创建另 fsync 父目录）。
     损坏 / 末行不完整 → read_all fail-closed。无 update/delete/truncate。"""
     def __init__(self, path: str) -> None:
-        self._path = path
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        self._path = path                            # 不在构造期 mkdir（避免 import 副作用）
 
     def append(self, event: AuditEvent) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(self._path)) or ".", exist_ok=True)
         existed = os.path.exists(self._path)
         with open(self._path, "a", encoding="utf-8") as f:
             f.write(_event_to_json(event) + "\n")
@@ -94,12 +102,12 @@ class LocalAnchor:
     """
     def __init__(self, path: str) -> None:
         self._path = path
-        self._pending = path + ".pending"
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        self._pending = path + ".pending"            # 不在构造期 mkdir（避免 import 副作用）
 
     @staticmethod
     def _durable_write(path: str, obj: dict) -> None:
         d = os.path.dirname(os.path.abspath(path))
+        os.makedirs(d, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=d)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -123,8 +131,9 @@ class LocalAnchor:
 
     def commit(self, head: AnchorHead) -> None:
         cur = self.read()                             # pending 存在 → 抛（fail-closed）
-        if cur is not None and head.seq < cur.seq:
-            raise ValueError("anchor head 回退被拒")
+        if cur is not None and (head.seq < cur.seq
+                                or (head.seq == cur.seq and head != cur)):
+            raise ValueError("anchor head 回退 / 相等冲突被拒")
         d = {"seq": head.seq, "integrity": head.integrity, "key_version": head.key_version}
         self._durable_write(self._pending, d)         # 1) pending 先 durable
         self._durable_write(self._path, d)            # 2) head replace durable

@@ -55,8 +55,10 @@ class MemoryAnchor:
         self._head: AnchorHead | None = None
 
     def commit(self, head: AnchorHead) -> None:
-        if self._head is not None and head.seq < self._head.seq:
-            raise ValueError("anchor head 回退被拒")
+        if self._head is not None and (
+                head.seq < self._head.seq
+                or (head.seq == self._head.seq and head != self._head)):
+            raise ValueError("anchor head 回退 / 相等冲突被拒")
         self._head = head
 
     def read(self) -> AnchorHead | None:
