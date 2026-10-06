@@ -1,14 +1,9 @@
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.actions.flow import ActionFlow
-from app.auth.model import ActorContext, AuthMethod, AuthenticatedPrincipal
-
-
-def _actor_from_header(x_actor: str | None) -> ActorContext:
-    # 临时 seam（Task 7 将由 Authenticator 取代）：X-Actor 未认证，不构成安全身份断言。
-    return ActorContext.from_principal(
-        AuthenticatedPrincipal(x_actor or "anonymous", AuthMethod.DEV))
+from app.auth.authenticator import Authenticator
+from app.auth.model import ActorContext, AuthenticatedPrincipal, RequestContext
 
 
 class ProposeRequest(BaseModel):
@@ -33,28 +28,40 @@ def _result(r) -> dict:
     }
 
 
-def create_actions_router(flow: ActionFlow) -> APIRouter:
+def create_actions_router(flow: ActionFlow, authenticator: Authenticator) -> APIRouter:
     router = APIRouter(prefix="/api/v1/actions")
 
+    def require_principal(request: Request) -> AuthenticatedPrincipal:
+        try:
+            principal = authenticator.authenticate(RequestContext(headers=dict(request.headers)))
+        except Exception:                  # 认证器异常 / IdP 不可用 → fail-closed（非 500）
+            raise HTTPException(status_code=401, detail="unauthenticated")
+        if principal is None:
+            raise HTTPException(status_code=401, detail="unauthenticated")
+        return principal
+
     @router.post("/propose")
-    def propose(req: ProposeRequest, x_actor: str | None = Header(default=None)):
-        # 注：X-Actor 是【未认证 seam】，不构成安全身份断言（未来接 authenticated principal）。
+    def propose(req: ProposeRequest,
+                principal: AuthenticatedPrincipal = Depends(require_principal)):
+        actor = ActorContext.from_principal(principal)        # 唯一 request actor 构造点
         payload = {"action_id": req.action_id, "target": req.target,
                    "parameters": req.parameters, "reason": req.reason}
-        return _result(flow.propose(req.incident_id, payload, _actor_from_header(x_actor)))
+        return _result(flow.propose(req.incident_id, payload, actor))
 
     @router.post("/approvals/{approval_id}")
     def decide(approval_id: str, req: ApprovalDecisionRequest,
-               x_actor: str | None = Header(default=None)):
+               principal: AuthenticatedPrincipal = Depends(require_principal)):
+        actor = ActorContext.from_principal(principal)
         try:
-            return _result(flow.decide_approval(approval_id, req.approved,
-                                                _actor_from_header(x_actor)))
+            return _result(flow.decide_approval(approval_id, req.approved, actor))
         except KeyError:
             raise HTTPException(404, "approval not found")
 
     @router.get("/approvals/{approval_id}")
-    def status(approval_id: str):
-        ap = flow.approval_status(approval_id)          # 只读，经 Flow，不直取内部 store
+    def status(approval_id: str,
+               principal: AuthenticatedPrincipal = Depends(require_principal)):
+        # 认证必需；GET 状态语义不产生 actor（不写入 provenance）。
+        ap = flow.approval_status(approval_id)
         if ap is None:
             raise HTTPException(404, "approval not found")
         return {"approval_id": ap.approval_id, "status": ap.status.value}

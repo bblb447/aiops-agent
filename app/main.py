@@ -7,7 +7,7 @@ from app.actions.flow import ActionFlow
 from app.actions.gateway import ActionGateway
 from app.actions.model import ExecutionOutcome
 from app.actions.registry import default_registry
-from app.auth.factory import resolve_executor_principal_id
+from app.auth.factory import build_authenticator, resolve_executor_principal_id
 from app.auth.model import ActorContext, AuthMethod
 from app.agent.agent import investigate
 from app.api import actions as actions_api
@@ -34,7 +34,9 @@ def create_app(settings: Settings | None = None,
     app = FastAPI(title="AIOps Agent")
     app.include_router(incidents.router)
     app.include_router(workload.router)
-    app.include_router(actions_api.create_actions_router(get_action_flow()))
+    resolved = _settings if _settings is not None else Settings()
+    app.include_router(actions_api.create_actions_router(
+        get_action_flow(), build_authenticator(resolved)))
     return app
 
 
