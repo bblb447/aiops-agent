@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException
 
 DATA = json.loads((Path(__file__).resolve().parent.parent / "fixtures" / "cmdb_data.json")
                   .read_text(encoding="utf-8"))
+TARGETS = json.loads((Path(__file__).resolve().parent.parent / "fixtures" / "cmdb_targets.json")
+                     .read_text(encoding="utf-8"))
 
 app = FastAPI()
 
@@ -19,6 +21,14 @@ def health() -> dict:
 @app.get("/services/{service}")
 def get_service(service: str) -> dict:
     item = DATA.get(service)
+    if item is None:
+        raise HTTPException(404, "not found")
+    return item
+
+
+@app.get("/targets/{name}")
+def get_target(name: str) -> dict:
+    item = TARGETS.get(name)
     if item is None:
         raise HTTPException(404, "not found")
     return item

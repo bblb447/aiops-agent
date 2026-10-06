@@ -1,0 +1,5 @@
+{
+  "pod-1": {"kind": "pod", "environment": "staging", "replicas": null},
+  "dep-1": {"kind": "deployment", "environment": "staging", "replicas": 3},
+  "prod-ns": {"kind": "namespace", "environment": "prod", "replicas": null}
+}
