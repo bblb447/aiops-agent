@@ -1,5 +1,7 @@
 import pytest
+
 from app.actions.audit import AuditEvent, AuditLog, verify_chain
+from app.auth.model import AuthMethod
 
 
 def _log():
@@ -28,8 +30,11 @@ def test_events_returns_immutable_tuple():
 def test_modify_detected():
     ev = list(_log().events())
     e = ev[1]
-    ev[1] = AuditEvent(e.seq, "TAMPERED", e.incident_id, e.action_id,
-                       e.proposal_fingerprint, e.detail, e.prev_integrity, e.integrity)
+    ev[1] = AuditEvent(seq=e.seq, event_type="TAMPERED", incident_id=e.incident_id,
+                       action_id=e.action_id, proposal_fingerprint=e.proposal_fingerprint,
+                       detail=e.detail, prev_integrity=e.prev_integrity,
+                       principal_id=e.principal_id, auth_method=e.auth_method,
+                       integrity=e.integrity)
     assert verify_chain(ev) is False
 
 
@@ -77,3 +82,21 @@ def test_detail_allowlisted_primitive_ok():
 def test_unknown_event_type_rejected():
     with pytest.raises(ValueError):
         AuditLog().append("NOPE")
+
+
+def test_principal_id_is_integrity_covered():
+    log = AuditLog()
+    log.append("APPROVED", principal_id="bob", auth_method=AuthMethod.DEV)
+    e = log.events()[0]
+    assert e.principal_id == "bob" and e.auth_method is AuthMethod.DEV
+    ev = list(log.events())
+    ev[0] = AuditEvent(seq=e.seq, event_type=e.event_type, incident_id=e.incident_id,
+                       action_id=e.action_id, proposal_fingerprint=e.proposal_fingerprint,
+                       detail=e.detail, prev_integrity=e.prev_integrity,
+                       principal_id="mallory", auth_method=e.auth_method, integrity=e.integrity)
+    assert verify_chain(ev) is False                       # 篡改 principal_id → 检出
+
+
+def test_identity_defaults_none():
+    e = AuditLog().append("PROPOSED")
+    assert e.principal_id is None and e.auth_method is None

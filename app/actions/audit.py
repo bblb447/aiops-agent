@@ -3,6 +3,8 @@ import json
 from dataclasses import dataclass
 from typing import Sequence
 
+from app.auth.model import AuthMethod
+
 GENESIS = "GENESIS"
 
 # detail 脱敏 allowlist：只有这些键允许进入 audit（绝不记 token/credential/raw payload/raw RCA/evidence）。
@@ -31,11 +33,13 @@ def _sanitize_strict(detail: dict) -> dict:
 
 
 def _canonical(seq, event_type, incident_id, action_id, proposal_fingerprint,
-               detail, prev_integrity) -> str:
+               principal_id, auth_method, detail, prev_integrity) -> str:
     # integrity 覆盖整条 canonical event（非仅 detail）。
+    am = auth_method.value if auth_method is not None else None
     return json.dumps({
         "seq": seq, "event_type": event_type, "incident_id": incident_id,
         "action_id": action_id, "proposal_fingerprint": proposal_fingerprint,
+        "principal_id": principal_id, "auth_method": am,
         "detail": detail, "prev_integrity": prev_integrity,
     }, sort_keys=True, ensure_ascii=False)
 
@@ -53,7 +57,9 @@ class AuditEvent:
     proposal_fingerprint: str | None
     detail: dict
     prev_integrity: str
-    integrity: str
+    principal_id: str | None = None
+    auth_method: AuthMethod | None = None
+    integrity: str = ""
 
 
 def verify_chain(events: Sequence[AuditEvent], head=None) -> bool:
@@ -70,7 +76,8 @@ def verify_chain(events: Sequence[AuditEvent], head=None) -> bool:
         if e.prev_integrity != prev:
             return False
         recomputed = _integrity(e.seq, e.event_type, e.incident_id, e.action_id,
-                                e.proposal_fingerprint, e.detail, e.prev_integrity)
+                                e.proposal_fingerprint, e.principal_id, e.auth_method,
+                                e.detail, e.prev_integrity)
         if recomputed != e.integrity:
             return False
         prev = e.integrity
@@ -90,16 +97,17 @@ class AuditLog:
         return self._head                               # (last_seq, last_integrity)
 
     def append(self, event_type: str, *, incident_id=None, action_id=None,
-               proposal_fingerprint=None, detail=None) -> AuditEvent:
+               proposal_fingerprint=None, detail=None,
+               principal_id=None, auth_method=None) -> AuditEvent:
         if event_type not in EVENT_TYPES:
             raise ValueError(f"未知 audit event_type: {event_type!r}")
         seq = len(self._events)
         prev = self._events[-1].integrity if self._events else GENESIS
         det = _sanitize_strict(dict(detail or {}))
         e = AuditEvent(seq, event_type, incident_id, action_id, proposal_fingerprint,
-                       det, prev,
+                       det, prev, principal_id, auth_method,
                        _integrity(seq, event_type, incident_id, action_id,
-                                  proposal_fingerprint, det, prev))
+                                  proposal_fingerprint, principal_id, auth_method, det, prev))
         self._events.append(e)
         self._head = (seq, e.integrity)                 # 推进承诺头
         return e
