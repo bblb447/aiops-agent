@@ -5,6 +5,7 @@ from app.actions.audit import AuditLog
 from app.actions.executor import ActionExecutor
 from app.actions.flow import ActionFlow
 from app.actions.gateway import ActionGateway
+from app.actions.inventory import CMDBInventoryResolver
 from app.actions.model import ExecutionOutcome
 from app.actions.registry import default_registry
 from app.auth.factory import build_authenticator, resolve_executor_principal_id
@@ -40,12 +41,6 @@ def create_app(settings: Settings | None = None,
     return app
 
 
-class _NullResolver:
-    """P3 未接 inventory：真实 target 一律解析失败（proposal REJECT）。真实解析留后续。"""
-    def resolve(self, target):
-        return None
-
-
 class _UnwiredBackend:
     """P3 占位：不接真实 K8s 写（真实 backend 与 write credential 留后续）。
 
@@ -68,7 +63,7 @@ def get_action_flow():
         service_principal = ActorContext(
             resolve_executor_principal_id(settings), AuthMethod.SERVICE)
         _flow = ActionFlow(
-            ActionGateway(default_registry(), _NullResolver(), get_svc().get),
+            ActionGateway(default_registry(), CMDBInventoryResolver(settings.cmdb_url), get_svc().get),
             store,
             ActionExecutor(_UnwiredBackend(), default_registry(), store,
                            service_principal=service_principal),
