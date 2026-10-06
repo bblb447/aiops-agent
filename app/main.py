@@ -2,6 +2,9 @@ from fastapi import FastAPI
 
 from app.actions.approval import ApprovalStore
 from app.actions.audit import AuditLog
+from app.actions.audit_local import (
+    LocalAnchor, LocalFileAuditStore, LocalKeyProvider, validate_audit_paths,
+)
 from app.actions.executor import ActionExecutor
 from app.actions.flow import ActionFlow
 from app.actions.gateway import ActionGateway
@@ -62,12 +65,17 @@ def get_action_flow():
         store = ApprovalStore()
         service_principal = ActorContext(
             resolve_executor_principal_id(settings), AuthMethod.SERVICE)
+        validate_audit_paths(settings.audit_records_path, settings.audit_anchor_path,
+                             settings.audit_key_path)
+        audit = AuditLog(LocalFileAuditStore(settings.audit_records_path),
+                         LocalAnchor(settings.audit_anchor_path),
+                         LocalKeyProvider(settings.audit_key_path))
         _flow = ActionFlow(
             ActionGateway(default_registry(), CMDBInventoryResolver(settings.cmdb_url), get_svc().get),
             store,
             ActionExecutor(_UnwiredBackend(), default_registry(), store,
                            service_principal=service_principal),
-            AuditLog())
+            audit)
     return _flow
 
 
