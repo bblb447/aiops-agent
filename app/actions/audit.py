@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import threading
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -101,17 +102,45 @@ def verify_chain(events: Sequence[AuditEvent], head, keys) -> bool:
     return True
 
 
-# Task 3 将由注入的 KeyProvider 取代；Task 2 用模块默认 key 维持核心可独立测。
-_DEFAULT_KEY = b"durable-audit-default-key"
-_DEFAULT_KEY_VERSION = 1
-
-
 class AuditLog:
-    def __init__(self) -> None:
+    """记录层：durable 链（store）+ head 锚定（anchor）+ key（keyProvider）。
+
+    缺省注入内存端口（dev/test；**不得用于生产 main 装配**）。`append`/`rotate` 由进程内锁串行化，
+    保证 seq 分配 → store.append → anchor.commit 不可交错。
+    """
+    def __init__(self, store=None, anchor=None, key_provider=None) -> None:
+        from app.actions.audit_ports import (
+            EphemeralKeyProvider, MemoryAnchor, MemoryAuditStore,
+        )
+        self._store = store if store is not None else MemoryAuditStore()
+        self._anchor = anchor if anchor is not None else MemoryAnchor()
+        self._kp = key_provider if key_provider is not None else EphemeralKeyProvider()
+        self._lock = threading.Lock()
         self._events: list[AuditEvent] = []
+        self._recover()
 
     def _key_map(self, events) -> dict:
-        return {_DEFAULT_KEY_VERSION: _DEFAULT_KEY}
+        out: dict[int, bytes] = {}
+        for e in events:
+            if e.key_version not in out:
+                k = self._kp.get(e.key_version)
+                if k is None:                       # 历史 key 缺失 → fail-closed
+                    raise ValueError(f"fail-closed：历史 key 缺失 version={e.key_version}")
+                out[e.key_version] = k
+        return out
+
+    def _recover(self) -> None:
+        events = list(self._store.read_all())
+        anchor = self._anchor.read()
+        if not events and anchor is None:
+            return                                  # 空 + 无锚 → 正常
+        if not events and anchor is not None:
+            raise ValueError("fail-closed：anchor 存在但 store 为空（非法状态）")
+        if events and anchor is None:
+            raise ValueError("fail-closed：store 非空但 anchor 缺失（禁止重新首锚）")
+        if not verify_chain(events, anchor, self._key_map(events)):
+            raise ValueError("fail-closed：链 / anchor 验证失败（可能被篡改）")
+        self._events = events
 
     def append(self, event_type: str, *, incident_id=None, action_id=None,
                proposal_fingerprint=None, detail=None,
@@ -120,16 +149,23 @@ class AuditLog:
             raise ValueError(f"未知 audit event_type: {event_type!r}")
         if auth_method is not None and not isinstance(auth_method, AuthMethod):
             auth_method = AuthMethod(auth_method)   # 规范化：raw str → AuthMethod（非法值 → ValueError）
-        seq = len(self._events)
-        prev = self._events[-1].integrity if self._events else GENESIS
-        det = _sanitize_strict(dict(detail or {}))
-        version = _DEFAULT_KEY_VERSION
-        integ = _integrity(seq, event_type, incident_id, action_id, proposal_fingerprint,
-                           principal_id, auth_method, version, det, prev, key=_DEFAULT_KEY)
-        e = AuditEvent(seq, event_type, incident_id, action_id, proposal_fingerprint,
-                       det, prev, version, principal_id, auth_method, integ)
-        self._events.append(e)
-        return e
+        with self._lock:                            # 单写者：seq/store/anchor 不可交错
+            version, key = self._kp.current()
+            seq = len(self._events)
+            prev = self._events[-1].integrity if self._events else GENESIS
+            det = _sanitize_strict(dict(detail or {}))
+            integ = _integrity(seq, event_type, incident_id, action_id, proposal_fingerprint,
+                               principal_id, auth_method, version, det, prev, key=key)
+            e = AuditEvent(seq, event_type, incident_id, action_id, proposal_fingerprint,
+                           det, prev, version, principal_id, auth_method, integ)
+            self._store.append(e)                   # durable（fsync）
+            self._anchor.commit(AnchorHead(seq, integ, version))   # durable + atomic
+            self._events.append(e)
+            return e
+
+    def rotate(self) -> int:
+        with self._lock:                            # 与 append 共享锁，避免 version 切换与构造竞态
+            return self._kp.rotate()
 
     def head(self) -> AnchorHead | None:
         return _observed_head(self._events)

@@ -119,3 +119,77 @@ def test_keyed_hmac_detects_field_tamper():
 def test_missing_key_fails_closed():
     log = _log(); e = log.events()[0]
     assert verify_chain([e], None, {}) is False        # keys 缺 version → False（fail-closed）
+
+
+# ---------- Task 3：恢复矩阵 + crash-safe append + 单写者 ----------
+
+from app.actions.audit_ports import (  # noqa: E402
+    AnchorHead, EphemeralKeyProvider, MemoryAnchor, MemoryAuditStore,
+)
+
+
+class _BoomAnchor:
+    def read(self):
+        return None
+
+    def commit(self, head):
+        raise RuntimeError("crash before commit")
+
+
+def test_recover_empty_store_no_anchor_ok():
+    AuditLog(MemoryAuditStore(), MemoryAnchor(), EphemeralKeyProvider())   # 不抛
+
+
+def test_recover_nonempty_store_without_anchor_fails_closed():
+    s = MemoryAuditStore(); a = MemoryAnchor(); kp = EphemeralKeyProvider()
+    AuditLog(s, a, kp).append("PROPOSED")
+    with pytest.raises(Exception):
+        AuditLog(s, MemoryAnchor(), kp)                 # anchor 被删 → 禁止重新首锚
+
+
+def test_recover_empty_store_with_anchor_fails_closed():
+    s = MemoryAuditStore(); a = MemoryAnchor(); kp = EphemeralKeyProvider()
+    a.commit(AnchorHead(0, "x", 1))
+    with pytest.raises(Exception):
+        AuditLog(s, a, kp)
+
+
+def test_append_crash_between_store_and_anchor_fails_closed_on_restart():
+    s = MemoryAuditStore(); kp = EphemeralKeyProvider()
+    log = AuditLog(s, _BoomAnchor(), kp)
+    with pytest.raises(RuntimeError):
+        log.append("PROPOSED")                          # store 成功、anchor.commit 崩
+    with pytest.raises(Exception):
+        AuditLog(s, MemoryAnchor(), kp)                 # 重启：store 非空 + anchor 缺 → fail-closed
+
+
+def test_normal_restart_verifies():
+    s = MemoryAuditStore(); a = MemoryAnchor(); kp = EphemeralKeyProvider()
+    log = AuditLog(s, a, kp); log.append("PROPOSED"); log.append("EXECUTED")
+    log2 = AuditLog(s, a, kp)                           # 重启
+    assert log2.verify() is True and len(log2.events()) == 2
+
+
+def test_concurrent_appends_are_serialized():
+    import threading, time
+
+    class _SlowStore(MemoryAuditStore):                 # 放大 I/O 窗口，暴露无锁交错
+        def append(self, event):
+            time.sleep(0.001)
+            super().append(event)
+
+    s = _SlowStore(); a = MemoryAnchor(); kp = EphemeralKeyProvider()
+    log = AuditLog(s, a, kp)
+
+    def worker():
+        for _ in range(20):
+            log.append("PROPOSED")
+
+    ts = [threading.Thread(target=worker) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert sorted(e.seq for e in log.events()) == list(range(80))   # 无重复/无空洞
+    assert log.verify() is True                                     # 链 + anchor 自洽
+    assert a.read() == log.head()                                   # anchor 与内存 head 一致
