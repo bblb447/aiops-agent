@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 
 from app.actions.audit import AuditEvent, AuditLog, verify_chain
@@ -28,39 +30,34 @@ def test_events_returns_immutable_tuple():
 
 
 def test_modify_detected():
-    ev = list(_log().events())
-    e = ev[1]
+    log = _log(); ev = list(log.events()); e = ev[1]
     ev[1] = AuditEvent(seq=e.seq, event_type="TAMPERED", incident_id=e.incident_id,
                        action_id=e.action_id, proposal_fingerprint=e.proposal_fingerprint,
                        detail=e.detail, prev_integrity=e.prev_integrity,
-                       principal_id=e.principal_id, auth_method=e.auth_method,
-                       integrity=e.integrity)
-    assert verify_chain(ev) is False
+                       key_version=e.key_version, principal_id=e.principal_id,
+                       auth_method=e.auth_method, integrity=e.integrity)
+    assert verify_chain(ev, None, log._key_map(ev)) is False
 
 
 def test_delete_detected():
-    ev = list(_log().events())
-    del ev[1]
-    assert verify_chain(ev) is False
+    log = _log(); ev = list(log.events()); del ev[1]
+    assert verify_chain(ev, None, log._key_map(ev)) is False
 
 
 def test_insert_detected():
-    ev = list(_log().events())
-    ev.insert(1, ev[0])
-    assert verify_chain(ev) is False
+    log = _log(); ev = list(log.events()); ev.insert(1, ev[0])   # 重复 seq
+    assert verify_chain(ev, None, log._key_map(ev)) is False
 
 
 def test_reorder_detected():
-    ev = list(_log().events())
-    ev[0], ev[1] = ev[1], ev[0]
-    assert verify_chain(ev) is False
+    log = _log(); ev = list(log.events()); ev[0], ev[1] = ev[1], ev[0]
+    assert verify_chain(ev, None, log._key_map(ev)) is False
 
 
 def test_tail_delete_detected_via_head_commitment():
-    log = _log()
-    ev = list(log.events())
-    assert verify_chain(ev[:-1]) is True               # 截断短链本身合法……
-    assert verify_chain(ev[:-1], log.head()) is False  # ……对照承诺头 → 检出 tail-delete
+    log = _log(); ev = list(log.events())
+    assert verify_chain(ev[:-1], None, log._key_map(ev)) is True       # 截断短链本身合法……
+    assert verify_chain(ev[:-1], log.head(), log._key_map(ev)) is False  # ……对照承诺头 → 检出
     assert log.verify() is True
 
 
@@ -93,8 +90,9 @@ def test_principal_id_is_integrity_covered():
     ev[0] = AuditEvent(seq=e.seq, event_type=e.event_type, incident_id=e.incident_id,
                        action_id=e.action_id, proposal_fingerprint=e.proposal_fingerprint,
                        detail=e.detail, prev_integrity=e.prev_integrity,
-                       principal_id="mallory", auth_method=e.auth_method, integrity=e.integrity)
-    assert verify_chain(ev) is False                       # 篡改 principal_id → 检出
+                       key_version=e.key_version, principal_id="mallory",
+                       auth_method=e.auth_method, integrity=e.integrity)
+    assert verify_chain(ev, None, log._key_map(ev)) is False
 
 
 def test_identity_defaults_none():
@@ -103,7 +101,6 @@ def test_identity_defaults_none():
 
 
 def test_auth_method_normalized_to_enum():
-    # auth_method 运行时保持 AuthMethod 类型（稳定契约），_canonical 的 .value 不靠错误暴露
     e = AuditLog().append("APPROVED", auth_method="dev")
     assert e.auth_method is AuthMethod.DEV
 
@@ -111,3 +108,14 @@ def test_auth_method_normalized_to_enum():
 def test_invalid_auth_method_rejected():
     with pytest.raises(ValueError):
         AuditLog().append("APPROVED", auth_method="bogus")
+
+
+def test_keyed_hmac_detects_field_tamper():
+    log = _log(); e = log.events()[0]
+    bad = dataclasses.replace(e, event_type="TAMPERED")
+    assert verify_chain([bad], None, log._key_map([bad])) is False
+
+
+def test_missing_key_fails_closed():
+    log = _log(); e = log.events()[0]
+    assert verify_chain([e], None, {}) is False        # keys 缺 version → False（fail-closed）

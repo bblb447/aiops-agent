@@ -47,8 +47,9 @@ def test_pa5_audit_identity_is_integrity_covered():
     tampered = AuditEvent(seq=e.seq, event_type=e.event_type, incident_id=e.incident_id,
                           action_id=e.action_id, proposal_fingerprint=e.proposal_fingerprint,
                           detail=e.detail, prev_integrity=e.prev_integrity,
-                          principal_id="mallory", auth_method=e.auth_method, integrity=e.integrity)
-    assert verify_chain([tampered]) is False
+                          key_version=e.key_version, principal_id="mallory",
+                          auth_method=e.auth_method, integrity=e.integrity)
+    assert verify_chain([tampered], None, log._key_map([tampered])) is False
 
 
 # ---- PA6：request actor 与 executor service principal 双入口分离 ----

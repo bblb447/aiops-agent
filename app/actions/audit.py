@@ -1,8 +1,10 @@
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass
 from typing import Sequence
 
+from app.actions.audit_ports import AnchorHead
 from app.auth.model import AuthMethod
 
 GENESIS = "GENESIS"
@@ -33,19 +35,23 @@ def _sanitize_strict(detail: dict) -> dict:
 
 
 def _canonical(seq, event_type, incident_id, action_id, proposal_fingerprint,
-               principal_id, auth_method, detail, prev_integrity) -> str:
-    # integrity 覆盖整条 canonical event（非仅 detail）。
+               principal_id, auth_method, key_version, detail, prev_integrity) -> str:
+    # integrity 覆盖整条 canonical event（含 key_version）。
     am = auth_method.value if auth_method is not None else None
     return json.dumps({
         "seq": seq, "event_type": event_type, "incident_id": incident_id,
         "action_id": action_id, "proposal_fingerprint": proposal_fingerprint,
-        "principal_id": principal_id, "auth_method": am,
+        "principal_id": principal_id, "auth_method": am, "key_version": key_version,
         "detail": detail, "prev_integrity": prev_integrity,
     }, sort_keys=True, ensure_ascii=False)
 
 
-def _integrity(*args) -> str:
-    return hashlib.sha256(_canonical(*args).encode("utf-8")).hexdigest()
+def _integrity(seq, event_type, incident_id, action_id, proposal_fingerprint,
+               principal_id, auth_method, key_version, detail, prev_integrity,
+               *, key: bytes) -> str:
+    msg = _canonical(seq, event_type, incident_id, action_id, proposal_fingerprint,
+                     principal_id, auth_method, key_version, detail, prev_integrity)
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -57,44 +63,55 @@ class AuditEvent:
     proposal_fingerprint: str | None
     detail: dict
     prev_integrity: str
+    key_version: int                              # required：DA5 的 integrity 输入，无默认
     principal_id: str | None = None
     auth_method: AuthMethod | None = None
     integrity: str = ""
 
 
-def verify_chain(events: Sequence[AuditEvent], head=None) -> bool:
-    """纯函数：检测 modify / delete / insert / reorder。
+def _observed_head(events) -> AnchorHead | None:
+    if not events:
+        return None
+    e = events[-1]
+    return AnchorHead(e.seq, e.integrity, e.key_version)
 
-    `head=(seq, integrity)` 是**独立 head commitment**；给定后同时校验「观测尾 == 承诺头」，
-    故可检测 **tail-delete**。无 head 时只验证链内部完整性，不承诺 tail-delete detection；
-    完整 B2 verification 须提供 committed head（`AuditLog.verify()` 始终提供）。
+
+def verify_chain(events: Sequence[AuditEvent], head, keys) -> bool:
+    """纯函数：keyed 链验证（检测 modify / delete / insert / reorder / tail-delete）。
+
+    `keys: Mapping[int, bytes]` —— 每个事件按其 `key_version` 取 key；**任一缺失 → False**（fail-closed）。
+    `head: AnchorHead | None` —— 非 None 时校验「观测尾 == 承诺头」（检 tail-delete）。
+    **无 I/O、不依赖 KeyProvider**；HMAC 复算在本函数内完成。
     """
     prev = GENESIS
     for expected_seq, e in enumerate(events):
-        if e.seq != expected_seq:
+        if e.seq != expected_seq or e.prev_integrity != prev:
             return False
-        if e.prev_integrity != prev:
+        key = keys.get(e.key_version)
+        if key is None:                           # 历史 key 缺失 → fail-closed
             return False
         recomputed = _integrity(e.seq, e.event_type, e.incident_id, e.action_id,
                                 e.proposal_fingerprint, e.principal_id, e.auth_method,
-                                e.detail, e.prev_integrity)
+                                e.key_version, e.detail, e.prev_integrity, key=key)
         if recomputed != e.integrity:
             return False
         prev = e.integrity
-    if head is not None:
-        observed = (events[-1].seq, events[-1].integrity) if events else (-1, GENESIS)
-        if observed != head:
-            return False
+    if head is not None and head != _observed_head(events):
+        return False
     return True
+
+
+# Task 3 将由注入的 KeyProvider 取代；Task 2 用模块默认 key 维持核心可独立测。
+_DEFAULT_KEY = b"durable-audit-default-key"
+_DEFAULT_KEY_VERSION = 1
 
 
 class AuditLog:
     def __init__(self) -> None:
         self._events: list[AuditEvent] = []
-        self._head: tuple[int, str] = (-1, GENESIS)     # 独立 head commitment
 
-    def head(self) -> tuple[int, str]:
-        return self._head                               # (last_seq, last_integrity)
+    def _key_map(self, events) -> dict:
+        return {_DEFAULT_KEY_VERSION: _DEFAULT_KEY}
 
     def append(self, event_type: str, *, incident_id=None, action_id=None,
                proposal_fingerprint=None, detail=None,
@@ -106,16 +123,19 @@ class AuditLog:
         seq = len(self._events)
         prev = self._events[-1].integrity if self._events else GENESIS
         det = _sanitize_strict(dict(detail or {}))
+        version = _DEFAULT_KEY_VERSION
+        integ = _integrity(seq, event_type, incident_id, action_id, proposal_fingerprint,
+                           principal_id, auth_method, version, det, prev, key=_DEFAULT_KEY)
         e = AuditEvent(seq, event_type, incident_id, action_id, proposal_fingerprint,
-                       det, prev, principal_id, auth_method,
-                       _integrity(seq, event_type, incident_id, action_id,
-                                  proposal_fingerprint, principal_id, auth_method, det, prev))
+                       det, prev, version, principal_id, auth_method, integ)
         self._events.append(e)
-        self._head = (seq, e.integrity)                 # 推进承诺头
         return e
+
+    def head(self) -> AnchorHead | None:
+        return _observed_head(self._events)
 
     def events(self) -> tuple[AuditEvent, ...]:
         return tuple(self._events)          # 不暴露可变内部 list
 
     def verify(self) -> bool:
-        return verify_chain(self._events, self._head)   # 带 head → 覆盖 tail-delete
+        return verify_chain(self._events, self.head(), self._key_map(self._events))
