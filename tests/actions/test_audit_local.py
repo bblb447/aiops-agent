@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app.actions.audit import AuditEvent
-from app.actions.audit_local import LocalAnchor, LocalFileAuditStore
+from app.actions.audit_local import LocalAnchor, LocalFileAuditStore, LocalKeyProvider
 from app.actions.audit_ports import AnchorHead
 
 
@@ -92,3 +92,34 @@ def test_crash_after_replace_before_finalize_fails_closed(tmp_path):
         json.dumps({"seq": 2, "integrity": "y", "key_version": 1}), encoding="utf-8")
     with pytest.raises(ValueError):
         a.read()
+
+
+# ---------- Task 6：LocalKeyProvider（原子 rotation + bootstrap） ----------
+
+def test_construction_does_not_create_key_material(tmp_path):
+    p = tmp_path / "keys.json"
+    LocalKeyProvider(str(p))
+    assert not p.exists()                            # 构造不生成 key
+
+
+def test_first_current_bootstraps_and_durables(tmp_path):
+    p = tmp_path / "keys.json"
+    kp = LocalKeyProvider(str(p))
+    v, key = kp.current()
+    assert v == 1 and p.exists()
+    assert LocalKeyProvider(str(p)).get(1) == key    # 已 durable
+
+
+def test_rotate_durable_and_old_key_retained(tmp_path):
+    p = tmp_path / "keys.json"
+    kp = LocalKeyProvider(str(p)); _, k1 = kp.current()
+    v2 = kp.rotate()
+    assert v2 == 2
+    kp2 = LocalKeyProvider(str(p))                   # 重启（从 durable 恢复）
+    assert kp2.get(1) == k1                           # 旧 key 保留
+    v, k2 = kp2.current()
+    assert v == 2 and kp2.get(2) == k2                # 新 version 已 durable
+
+
+def test_missing_version_returns_none(tmp_path):
+    assert LocalKeyProvider(str(tmp_path / "keys.json")).get(99) is None

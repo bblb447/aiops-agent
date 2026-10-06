@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import tempfile
@@ -112,3 +113,52 @@ class LocalAnchor:
         self._durable_write(self._path, d)            # 2) head replace durable
         os.remove(self._pending)                      # 3) 撤 pending
         _fsync_dir(os.path.dirname(os.path.abspath(self._path)))
+
+
+class LocalKeyProvider:
+    """version→key 映射落盘（落点须在 audit 数据目录之外，见路径校验）。
+    构造不写盘；首次 `current()` 才 bootstrap 初始 key 并 durable；rotate durable-before-use。
+    旧 key 不隐式退休 / 删除（DA6）。"""
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._data = self._load()                     # 不 mkdir、不写盘
+
+    def _load(self) -> dict:
+        if not os.path.exists(self._path):
+            return {"current": 0, "keys": {}}         # 尚未 bootstrap
+        with open(self._path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _durable_write(self, d: dict) -> None:
+        ddir = os.path.dirname(os.path.abspath(self._path))
+        os.makedirs(ddir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=ddir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(d, f, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._path)               # 原子
+            _fsync_dir(ddir)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    def current(self) -> tuple[int, bytes]:
+        if self._data["current"] == 0:                # 首次真正使用 → bootstrap
+            self._data["keys"]["1"] = base64.b64encode(os.urandom(32)).decode()
+            self._data["current"] = 1
+            self._durable_write(self._data)           # durable 后才返回
+        v = self._data["current"]
+        return v, base64.b64decode(self._data["keys"][str(v)])
+
+    def get(self, version: int) -> bytes | None:
+        b = self._data["keys"].get(str(version))
+        return base64.b64decode(b) if b is not None else None
+
+    def rotate(self) -> int:
+        new = self._data["current"] + 1
+        self._data["keys"][str(new)] = base64.b64encode(os.urandom(32)).decode()
+        self._data["current"] = new
+        self._durable_write(self._data)               # 先 durable
+        return new                                    # 返回后才允许 current() 取新 version
