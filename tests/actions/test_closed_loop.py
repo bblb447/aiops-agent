@@ -8,6 +8,11 @@ from app.actions.model import AdmissionOutcome, ExecutionOutcome, TargetDescript
 from app.actions.registry import default_registry
 from app.incident.model import RCAResult
 from app.incident.service import IncidentService
+from app.auth.model import ActorContext, AuthenticatedPrincipal, AuthMethod
+
+
+def _actor(pid="ops"):
+    return ActorContext.from_principal(AuthenticatedPrincipal(pid, AuthMethod.DEV, {}))
 
 
 class _Resolver:
@@ -54,9 +59,9 @@ _SCALE = {"action_id": "scale_deployment", "target": "dep-1",
 
 def test_full_closed_loop_approval_executed_then_audit_verifies():
     flow, store, be, audit = _flow(_incident(), _DEP)
-    r = flow.propose("i", _SCALE, {"actor": "ops"})
+    r = flow.propose("i", _SCALE, _actor())
     assert r.status == "AWAITING_APPROVAL" and be.calls == 0
-    r2 = flow.decide_approval(r.approval_id, True, {"actor": "ops"})
+    r2 = flow.decide_approval(r.approval_id, True, _actor())
     assert r2.execution.outcome is ExecutionOutcome.EXECUTED and be.calls == 1
     types = [e.event_type for e in audit.events()]
     assert types == ["PROPOSED", "RISK_EVALUATED", "POLICY_DECIDED", "APPROVAL_REQUESTED",
@@ -67,7 +72,7 @@ def test_full_closed_loop_approval_executed_then_audit_verifies():
 def test_reverse_critical_denied_no_approval_no_execution():
     flow, store, be, audit = _flow(_incident(), _NS)
     r = flow.propose("i", {"action_id": "delete_namespace", "target": "ns-1",
-                           "parameters": {"namespace": "ns-1"}}, {"actor": "ops"})
+                           "parameters": {"namespace": "ns-1"}}, _actor())
     assert r.status == "DENIED" and r.approval_id is None and be.calls == 0
     types = [e.event_type for e in audit.events()]
     assert "EXECUTED" not in types and "APPROVAL_REQUESTED" not in types
@@ -75,7 +80,7 @@ def test_reverse_critical_denied_no_approval_no_execution():
 
 def test_reverse_tampered_fingerprint_admission_rejected_no_mutation():
     flow, store, be, audit = _flow(_incident(), _DEP)
-    r = flow.propose("i", _SCALE, {"actor": "ops"})
+    r = flow.propose("i", _SCALE, _actor())
     store.approve(r.approval_id, actor="ops")
     from dataclasses import replace
     from app.actions.executor import SealedOrder
@@ -89,7 +94,7 @@ def test_reverse_tampered_fingerprint_admission_rejected_no_mutation():
 
 def test_reverse_expired_approval_no_execution():
     flow, store, be, audit = _flow(_incident(), _DEP)
-    r = flow.propose("i", _SCALE, {"actor": "ops"})
+    r = flow.propose("i", _SCALE, _actor())
     store.expire(r.approval_id)
     from app.actions.executor import seal as _seal
     with pytest.raises(ValueError):

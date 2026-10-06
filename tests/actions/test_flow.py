@@ -7,6 +7,11 @@ from app.actions.model import ExecutionOutcome, TargetDescriptor
 from app.actions.registry import default_registry
 from app.incident.model import RCAResult
 from app.incident.service import IncidentService
+from app.auth.model import ActorContext, AuthenticatedPrincipal, AuthMethod
+
+
+def _actor(pid="ops"):
+    return ActorContext.from_principal(AuthenticatedPrincipal(pid, AuthMethod.DEV, {}))
 
 
 class _Resolver:
@@ -39,7 +44,7 @@ def _eligible_incident():
 _PROD = {"pod-1": TargetDescriptor("pod", "staging", 3)}
 _DEP = {"dep-1": TargetDescriptor("deployment", "staging", 3)}
 _NS = {"ns-1": TargetDescriptor("namespace", "prod", None)}
-_ACTOR = {"actor": "ops"}
+_ACTOR = _actor()
 
 
 def _flow(inc, desc=None):

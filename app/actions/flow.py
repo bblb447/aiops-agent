@@ -7,6 +7,7 @@ from app.actions.gateway import ActionGateway
 from app.actions.model import (
     AdmissionOutcome, DecisionResult, ExecutionResult, GatewayOutcome,
 )
+from app.auth.model import ActorContext
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class ActionFlow:
                                detail={"execution_outcome": res.outcome.value})
         return res
 
-    def propose(self, incident_id: str, payload: dict, actor_context: dict) -> FlowResult:
+    def propose(self, incident_id: str, payload: dict, actor_context: ActorContext) -> FlowResult:
         self._audit.append("PROPOSED", incident_id=incident_id)
         res = self._gateway.evaluate(incident_id, payload, actor_context)
         fp = res.proposal_fingerprint
@@ -77,11 +78,11 @@ class ActionFlow:
         return FlowResult("EXECUTED", decision=res, execution=ex)
 
     def decide_approval(self, approval_id: str, approved: bool,
-                        actor_context: dict) -> FlowResult:
+                        actor_context: ActorContext) -> FlowResult:
         ap = self._approvals.get(approval_id)
         if ap is None:
             raise KeyError(approval_id)
-        actor = str(actor_context.get("actor", "unknown"))
+        actor = actor_context.principal_id
         if not approved:
             self._approvals.reject(approval_id, actor)
             self._audit.append("REJECTED", action_id=ap.snapshot.action_id,

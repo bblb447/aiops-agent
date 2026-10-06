@@ -10,6 +10,7 @@ from app.actions.model import (
 from app.actions.policy import decide
 from app.actions.registry import ActionRegistry, validate_parameters
 from app.actions.risk import evaluate_risk
+from app.auth.model import ActorContext
 
 
 def proposal_fingerprint(ctx: V1DecisionContext, action_id: str,
@@ -40,7 +41,7 @@ class ActionGateway:
         self._resolver = resolver
         self._read_incident = incident_reader
 
-    def evaluate(self, incident_id: str, payload: dict, actor_context: dict) -> DecisionResult:
+    def evaluate(self, incident_id: str, payload: dict, actor_context: ActorContext) -> DecisionResult:
         # 0) payload 类型 fail-closed（非 dict 一律拒，不猜测）
         if not isinstance(payload, dict):
             return DecisionResult(GatewayOutcome.REJECT, reason="proposal 必须是对象")
