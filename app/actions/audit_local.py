@@ -34,6 +34,23 @@ def _fsync_dir(d: str) -> None:
         os.close(dfd)
 
 
+def validate_audit_paths(records: str, anchor: str, key: str) -> None:
+    """启动隔离校验（fail-closed）：anchor/key 不得落在 records 目录内，且 anchor ≠ key。
+
+    注意：路径分离 ≠ 完整 OS trust-domain separation（同机同 account 仍可能同时改三者）；
+    真正强锚定（external WORM/KMS/HSM）留 additive。此校验只防「明显误配」。
+    """
+    rec_dir = os.path.dirname(os.path.abspath(records))
+    anc = os.path.abspath(anchor)
+    kp = os.path.abspath(key)
+    if os.path.dirname(anc) == rec_dir:
+        raise ValueError("audit anchor path 不得位于 records 目录内")
+    if os.path.dirname(kp) == rec_dir:
+        raise ValueError("audit key path 不得位于 records 目录内")
+    if anc == kp:
+        raise ValueError("audit anchor 与 key 不得使用同一路径")
+
+
 class LocalFileAuditStore:
     """append-only JSONL；append 后 fsync（首次创建另 fsync 父目录）。
     损坏 / 末行不完整 → read_all fail-closed。无 update/delete/truncate。"""

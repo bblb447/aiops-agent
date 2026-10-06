@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     authenticator: str = ""                      # "" | "dev" | "oidc_jwt"
     executor_principal_id: str = ""              # 空 = 未配置；装配处强制非空
 
+    # durable audit：records / anchor / key 默认即属不同数据目录（见 validate_audit_paths）
+    audit_records_path: str = ".data/audit/records.jsonl"
+    audit_anchor_path: str = ".data/audit-anchor/head.json"
+    audit_key_path: str = ".data/audit-key/keys.json"
+
 
 @lru_cache
 def get_settings() -> Settings:
