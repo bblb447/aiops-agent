@@ -5,10 +5,13 @@ from app.actions.flow import ActionFlow
 from app.actions.gateway import ActionGateway
 from app.actions.model import ExecutionOutcome, TargetDescriptor
 from app.actions.registry import default_registry
+from app.auth.model import ActorContext, AuthMethod
 from app.incident.model import RCAResult
 from app.incident.service import IncidentService
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+_SVC = ActorContext("executor-service", AuthMethod.SERVICE)
 
 
 class _Resolver:
@@ -30,7 +33,7 @@ def _client():
     inc.status = "ROOT_CAUSE_FOUND"
     store = ApprovalStore()
     flow = ActionFlow(ActionGateway(default_registry(), _Resolver(), lambda iid: inc),
-                      store, ActionExecutor(_Backend(), default_registry(), store), AuditLog())
+                      store, ActionExecutor(_Backend(), default_registry(), store, _SVC), AuditLog())
     from app.api.actions import create_actions_router
     app = FastAPI()
     app.include_router(create_actions_router(flow))

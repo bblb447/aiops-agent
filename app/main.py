@@ -7,6 +7,8 @@ from app.actions.flow import ActionFlow
 from app.actions.gateway import ActionGateway
 from app.actions.model import ExecutionOutcome
 from app.actions.registry import default_registry
+from app.auth.factory import resolve_executor_principal_id
+from app.auth.model import ActorContext, AuthMethod
 from app.agent.agent import investigate
 from app.api import actions as actions_api
 from app.api import incidents, workload
@@ -57,10 +59,18 @@ _flow = None
 def get_action_flow():
     global _flow
     if _flow is None:
+        # 不用 current_settings()/get_settings()：模块级 create_app() 在 import 时即调用本函数，
+        # 会预热 get_settings 的 lru_cache，破坏 tests/test_config.py 的 monkeypatch 用例。
+        settings = _settings if _settings is not None else Settings()
         store = ApprovalStore()
+        service_principal = ActorContext(
+            resolve_executor_principal_id(settings), AuthMethod.SERVICE)
         _flow = ActionFlow(
             ActionGateway(default_registry(), _NullResolver(), get_svc().get),
-            store, ActionExecutor(_UnwiredBackend(), default_registry(), store), AuditLog())
+            store,
+            ActionExecutor(_UnwiredBackend(), default_registry(), store,
+                           service_principal=service_principal),
+            AuditLog())
     return _flow
 
 

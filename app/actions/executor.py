@@ -7,6 +7,7 @@ from app.actions.model import (
     PermissionLevel, PolicyDecision, TargetDescriptor,
 )
 from app.actions.registry import ActionRegistry
+from app.auth.model import ActorContext
 
 
 class _SealCapability:
@@ -61,10 +62,15 @@ class ActionExecutor:
     """唯一持有执行 backend 的组件；只做 defensive admission，不重跑 Risk/Policy。"""
 
     def __init__(self, backend, registry: ActionRegistry,
-                 approval_store: ApprovalStore) -> None:
+                 approval_store: ApprovalStore, service_principal: ActorContext) -> None:
         self._backend = backend
         self._registry = registry
         self._approvals = approval_store
+        self._service_principal = service_principal
+
+    @property
+    def service_principal(self) -> ActorContext:
+        return self._service_principal
 
     def execute(self, order: SealedOrder) -> ExecutionResult:
         snap = order.snapshot

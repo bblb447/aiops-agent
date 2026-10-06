@@ -2,6 +2,13 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.actions.flow import ActionFlow
+from app.auth.model import ActorContext, AuthMethod, AuthenticatedPrincipal
+
+
+def _actor_from_header(x_actor: str | None) -> ActorContext:
+    # 临时 seam（Task 7 将由 Authenticator 取代）：X-Actor 未认证，不构成安全身份断言。
+    return ActorContext.from_principal(
+        AuthenticatedPrincipal(x_actor or "anonymous", AuthMethod.DEV))
 
 
 class ProposeRequest(BaseModel):
@@ -34,14 +41,14 @@ def create_actions_router(flow: ActionFlow) -> APIRouter:
         # 注：X-Actor 是【未认证 seam】，不构成安全身份断言（未来接 authenticated principal）。
         payload = {"action_id": req.action_id, "target": req.target,
                    "parameters": req.parameters, "reason": req.reason}
-        return _result(flow.propose(req.incident_id, payload, {"actor": x_actor or "anonymous"}))
+        return _result(flow.propose(req.incident_id, payload, _actor_from_header(x_actor)))
 
     @router.post("/approvals/{approval_id}")
     def decide(approval_id: str, req: ApprovalDecisionRequest,
                x_actor: str | None = Header(default=None)):
         try:
             return _result(flow.decide_approval(approval_id, req.approved,
-                                                {"actor": x_actor or "anonymous"}))
+                                                _actor_from_header(x_actor)))
         except KeyError:
             raise HTTPException(404, "approval not found")
 

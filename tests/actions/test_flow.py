@@ -14,6 +14,9 @@ def _actor(pid="ops"):
     return ActorContext.from_principal(AuthenticatedPrincipal(pid, AuthMethod.DEV, {}))
 
 
+_SVC = ActorContext("executor-service", AuthMethod.SERVICE)
+
+
 class _Resolver:
     def __init__(self, desc):
         self._desc = desc
@@ -52,7 +55,7 @@ def _flow(inc, desc=None):
     backend = _Backend()
     audit = AuditLog()
     gw = ActionGateway(default_registry(), _Resolver(desc or _PROD), lambda iid: inc)
-    ex = ActionExecutor(backend, default_registry(), store)
+    ex = ActionExecutor(backend, default_registry(), store, _SVC)
     return ActionFlow(gw, store, ex, audit), store, backend, audit
 
 
@@ -107,3 +110,26 @@ def test_critical_denied_no_approval_no_execution():
                            "parameters": {"namespace": "ns-1"}}, _ACTOR)
     assert r.approval_id is None and backend.calls == 0
     assert "APPROVAL_REQUESTED" not in [e.event_type for e in audit.events()]
+
+
+def test_audit_attribution_matrix():
+    flow, store, backend, audit = _flow(_eligible_incident(), desc=_DEP)
+    r = flow.propose("i", {"action_id": "scale_deployment", "target": "dep-1",
+                           "parameters": {"namespace": "prod", "deployment": "d", "replicas": 2}},
+                     _actor("alice"))
+    flow.decide_approval(r.approval_id, True, _actor("bob"))
+    by = {e.event_type: e.principal_id for e in audit.events()}
+    assert by["PROPOSED"] == "alice"
+    assert by["RISK_EVALUATED"] == "alice"
+    assert by["POLICY_DECIDED"] == "alice"
+    assert by["APPROVAL_REQUESTED"] == "alice"
+    assert by["APPROVED"] == "bob"
+    assert by["EXECUTION_ACCEPTED"] == "executor-service"
+    assert by["EXECUTED"] == "executor-service"
+
+
+def test_gateway_reject_attributed_to_proposer_not_executor():
+    flow, store, backend, audit = _flow(_eligible_incident(), desc=_PROD)
+    flow.propose("i", {"action_id": "unknown", "target": "pod-1"}, _actor("alice"))
+    rejected = [e for e in audit.events() if e.event_type == "EXECUTION_REJECTED"]
+    assert rejected and all(e.principal_id == "alice" for e in rejected)

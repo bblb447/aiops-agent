@@ -33,44 +33,54 @@ class ActionFlow:
         return res.snapshot.action_id if res.snapshot else None
 
     def _run_execution(self, order, incident_id: str) -> ExecutionResult:
+        svc = self._executor.service_principal
         res = self._executor.execute(order)
         if res.admission is AdmissionOutcome.REJECTED:
             self._audit.append("EXECUTION_REJECTED", incident_id=incident_id,
                                action_id=order.action_id,
                                proposal_fingerprint=order.proposal_fingerprint,
-                               detail={"reason_kind": res.reason})
+                               detail={"reason_kind": res.reason},
+                               principal_id=svc.principal_id, auth_method=svc.auth_method)
         else:
             self._audit.append("EXECUTION_ACCEPTED", incident_id=incident_id,
                                action_id=order.action_id,
-                               proposal_fingerprint=order.proposal_fingerprint)
+                               proposal_fingerprint=order.proposal_fingerprint,
+                               principal_id=svc.principal_id, auth_method=svc.auth_method)
             self._audit.append(res.outcome.value, incident_id=incident_id,
                                action_id=order.action_id,
                                proposal_fingerprint=order.proposal_fingerprint,
-                               detail={"execution_outcome": res.outcome.value})
+                               detail={"execution_outcome": res.outcome.value},
+                               principal_id=svc.principal_id, auth_method=svc.auth_method)
         return res
 
     def propose(self, incident_id: str, payload: dict, actor_context: ActorContext) -> FlowResult:
-        self._audit.append("PROPOSED", incident_id=incident_id)
+        pid, am = actor_context.principal_id, actor_context.auth_method
+        self._audit.append("PROPOSED", incident_id=incident_id, principal_id=pid, auth_method=am)
         res = self._gateway.evaluate(incident_id, payload, actor_context)
         fp = res.proposal_fingerprint
         aid = self._action_id(res)
         if res.outcome is GatewayOutcome.REJECT:
             self._audit.append("EXECUTION_REJECTED", incident_id=incident_id, action_id=aid,
-                               proposal_fingerprint=fp, detail={"reason_kind": "gateway_reject"})
+                               proposal_fingerprint=fp, detail={"reason_kind": "gateway_reject"},
+                               principal_id=pid, auth_method=am)
             return FlowResult("REJECTED", decision=res)
         self._audit.append("RISK_EVALUATED", incident_id=incident_id, action_id=aid,
-                           proposal_fingerprint=fp, detail={"final_risk": res.final_risk.value})
+                           proposal_fingerprint=fp, detail={"final_risk": res.final_risk.value},
+                           principal_id=pid, auth_method=am)
         self._audit.append("POLICY_DECIDED", incident_id=incident_id, action_id=aid,
                            proposal_fingerprint=fp,
-                           detail={"policy_decision": res.policy_decision.value})
+                           detail={"policy_decision": res.policy_decision.value},
+                           principal_id=pid, auth_method=am)
         if res.outcome is GatewayOutcome.DENY:
             self._audit.append("EXECUTION_REJECTED", incident_id=incident_id, action_id=aid,
-                               proposal_fingerprint=fp, detail={"reason_kind": "denied"})
+                               proposal_fingerprint=fp, detail={"reason_kind": "denied"},
+                               principal_id=pid, auth_method=am)
             return FlowResult("DENIED", decision=res)
         if res.outcome is GatewayOutcome.APPROVAL_REQUIRED:
             ap = self._approvals.request(res.snapshot)
             self._audit.append("APPROVAL_REQUESTED", incident_id=incident_id, action_id=aid,
-                               proposal_fingerprint=fp, detail={"approval_id": ap.approval_id})
+                               proposal_fingerprint=fp, detail={"approval_id": ap.approval_id},
+                               principal_id=pid, auth_method=am)
             return FlowResult("AWAITING_APPROVAL", decision=res, approval_id=ap.approval_id)
         # ALLOW：自动路径
         order = seal(res.snapshot, self._approvals, None)
@@ -83,16 +93,19 @@ class ActionFlow:
         if ap is None:
             raise KeyError(approval_id)
         actor = actor_context.principal_id
+        pid, am = actor_context.principal_id, actor_context.auth_method
         if not approved:
             self._approvals.reject(approval_id, actor)
             self._audit.append("REJECTED", action_id=ap.snapshot.action_id,
                                proposal_fingerprint=ap.snapshot.proposal_fingerprint,
-                               detail={"approval_id": approval_id})
+                               detail={"approval_id": approval_id},
+                               principal_id=pid, auth_method=am)
             return FlowResult("REJECTED", approval_id=approval_id)
         self._approvals.approve(approval_id, actor)
         self._audit.append("APPROVED", action_id=ap.snapshot.action_id,
                            proposal_fingerprint=ap.snapshot.proposal_fingerprint,
-                           detail={"approval_id": approval_id})
+                           detail={"approval_id": approval_id},
+                           principal_id=pid, auth_method=am)
         # 只消费已批准的 Approval.snapshot；不重跑 Gateway/Risk/Policy。
         order = seal(ap.snapshot, self._approvals, approval_id)
         ex = self._run_execution(order, incident_id=ap.snapshot.context.incident_id)

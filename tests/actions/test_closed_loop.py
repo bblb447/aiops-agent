@@ -15,6 +15,9 @@ def _actor(pid="ops"):
     return ActorContext.from_principal(AuthenticatedPrincipal(pid, AuthMethod.DEV, {}))
 
 
+_SVC = ActorContext("executor-service", AuthMethod.SERVICE)
+
+
 class _Resolver:
     def __init__(self, d):
         self._d = d
@@ -48,7 +51,7 @@ def _flow(inc, desc):
     be = _Backend()
     audit = AuditLog()
     gw = ActionGateway(default_registry(), _Resolver(desc), lambda iid: inc)
-    return ActionFlow(gw, store, ActionExecutor(be, default_registry(), store), audit), store, be, audit
+    return ActionFlow(gw, store, ActionExecutor(be, default_registry(), store, _SVC), audit), store, be, audit
 
 
 _DEP = {"dep-1": TargetDescriptor("deployment", "staging", 3)}
@@ -87,7 +90,7 @@ def test_reverse_tampered_fingerprint_admission_rejected_no_mutation():
     ap = store.get(r.approval_id)
     tampered = replace(ap.snapshot, proposal_fingerprint="0" * 64)
     # 直接构造（绕过 seal，无 capability）→ 拒；底层一次都不执行。
-    res = ActionExecutor(be, default_registry(), store).execute(
+    res = ActionExecutor(be, default_registry(), store, _SVC).execute(
         SealedOrder(snapshot=tampered, approval_id=r.approval_id))
     assert res.admission is AdmissionOutcome.REJECTED and be.calls == 0
 
